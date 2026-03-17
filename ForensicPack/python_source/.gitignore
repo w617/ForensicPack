@@ -1,0 +1,41 @@
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-build/
+venv/
+env/
+
+# Build/distribution artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ForensicPack runtime output
+TestOutput/
+forensicpack_state.db
+gui_settings.json
+ForensicPack_Report_*.txt
+ForensicPack_Report_*.csv
+ForensicPack_Report_*.json
+*.partial
+*.partial.*

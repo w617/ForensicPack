@@ -1,0 +1,45 @@
+name: Release Windows EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Build executable
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+
+      - name: Package release artifact
+        shell: pwsh
+        run: |
+          $artifactName = "ForensicPack-${{ github.ref_name }}-windows"
+          Compress-Archive -Path "dist/ForensicPack/*" -DestinationPath "$artifactName.zip" -Force
+          "ARTIFACT_PATH=$artifactName.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forensicpack-windows-${{ github.ref_name }}
+          path: ${{ env.ARTIFACT_PATH }}
+
+      - name: Publish GitHub release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARTIFACT_PATH }}
