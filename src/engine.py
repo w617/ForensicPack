@@ -28,9 +28,7 @@ from utils import (
     normalize_hash_algorithms,
 )
 
-APP_NAME = "ForensicPack"
-APP_VERSION = "2.0.0"
-APP_AUTHOR = "DFIR Utility"
+from version import APP_AUTHOR, APP_NAME, APP_VERSION
 
 _CORE_RUN_SESSION = _core.run_session
 

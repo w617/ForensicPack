@@ -18,8 +18,7 @@ from utils import (
     split_entry_path, split_output_parts, resolve_state_db_path
 )
 
-APP_NAME = "ForensicPack"
-APP_VERSION = "2.0.0"
+from version import APP_NAME, APP_VERSION
 
 def _default_result(item_path: Path, config: JobConfig) -> JobResult:
     return JobResult(

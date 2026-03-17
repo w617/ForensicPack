@@ -2,7 +2,7 @@
 title ForensicPack - Digital Forensics Auto-Archiver
 echo.
 echo  ====================================================
-echo    ForensicPack v2.0.0  -  DFIR Auto-Archiver
+echo    ForensicPack  -  DFIR Auto-Archiver
 echo  ====================================================
 echo.
 
