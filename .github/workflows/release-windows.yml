@@ -23,6 +23,18 @@ jobs:
           cache: pip
           cache-dependency-path: src/requirements-dev.txt
 
+      - name: Verify tag matches app version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
+          $versionLine = Select-String -Path "src/version.py" -Pattern '^APP_VERSION\s*=\s*"(.+)"' | Select-Object -First 1
+          if (-not $versionLine) { throw "APP_VERSION not found in src/version.py" }
+          $version = $versionLine.Matches[0].Groups[1].Value
+          if ($version -ne $tag) {
+            throw "Tag v$tag does not match APP_VERSION $version in src/version.py"
+          }
+
       - name: Build executable
         shell: pwsh
         working-directory: src
