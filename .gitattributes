@@ -1,0 +1,24 @@
+* text=auto
+
+# Normalize common source/documentation files as LF in the repository
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+*.ps1 text eol=lf
+*.bat text eol=crlf
+
+# Treat packaged/binary artifacts as binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.zip binary
+*.7z binary
+*.ico binary
+*.png binary
+
+# Keep packaged runtime/vendor files out of GitHub language stats
+release/windows/** linguist-vendored
+release/windows/** linguist-generated
+checksums/** linguist-generated

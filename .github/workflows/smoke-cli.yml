@@ -1,0 +1,45 @@
+name: Smoke CLI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: src
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Pack dry-run smoke test
+        working-directory: src
+        run: |
+          python forensicpack.py pack \
+            --source ./TestCases \
+            --output ./TestOutput_smoke \
+            --format zip \
+            --hash SHA256 \
+            --dry-run
+
+      - name: Verify smoke test
+        working-directory: src
+        run: |
+          python forensicpack.py verify \
+            --input ./TestCases \
+            --output ./TestOutput_smoke_verify
