@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="ForensicPack banner" width="100%" />
-</p>
-
-<p align="center">
-  <a href="../../actions"><img alt="CI" src="https://img.shields.io/badge/CI-ready-0f172a?style=for-the-badge"></a>
+  <a href="./actions"><img alt="CI" src="https://img.shields.io/badge/CI-ready-0f172a?style=for-the-badge"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-2563eb?style=for-the-badge">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows-0ea5e9?style=for-the-badge">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-14b8a6?style=for-the-badge">
@@ -22,12 +18,6 @@
 
 ---
 
-## Interface preview
-
-<p align="center">
-  <img src="assets/gui-main.png" alt="ForensicPack main interface" width="100%" />
-</p>
-
 ForensicPack is designed to feel like a real lab utility, not just a script bundle. The interface keeps the intake path, archive settings, hash selections, queue state, and live logging visible in one place so analysts can package and validate evidence with less context switching.
 
 ## Why ForensicPack
@@ -40,12 +30,6 @@ Digital evidence packaging is often pieced together with manual prep, separate h
 - emit TXT, CSV, and optional JSON reports for handoff and documentation
 - resume interrupted sessions from a SQLite-backed state store
 - run the same underlying process through GUI or scripted CLI execution
-
-## Workflow at a glance
-
-<p align="center">
-  <img src="assets/workflow.svg" alt="ForensicPack workflow overview" width="100%" />
-</p>
 
 ## Feature highlights
 
@@ -88,24 +72,28 @@ Use the GUI for day-to-day analyst operations and the CLI when you want the same
 ### Launch the GUI
 
 ```powershell
+cd src
 python forensicpack.py
 ```
 
 or:
 
 ```powershell
+cd src
 python forensicpack.py gui
 ```
 
 ### Package a collection from the CLI
 
 ```powershell
+cd src
 python forensicpack.py pack --source .\TestCases --output .\TestOutput --format zip --hash SHA256
 ```
 
 ### Verify output
 
 ```powershell
+cd src
 python forensicpack.py verify --input .\TestOutput --hash SHA256 --report-json
 ```
 
@@ -153,6 +141,7 @@ Expected 7-Zip paths:
 ### Development
 
 ```powershell
+cd src
 python -m pip install -r requirements-dev.txt
 ```
 
@@ -161,52 +150,47 @@ python -m pip install -r requirements-dev.txt
 ```text
 .
 ├── .github/workflows/        # CI and release automation
-├── assets/                   # Branding and README visuals
-├── docs/                     # User, GitHub, and operational docs
-├── scripts/                  # Build helpers
-├── TestCases/                # Sample input data
-├── forensicpack.py           # Main entrypoint
-├── cli.py                    # CLI parser and command dispatch
-├── core.py                   # Processing pipeline
-├── engine.py                 # Public API / compatibility facade
-├── gui.py                    # GUI launcher
-├── reporting.py              # TXT / CSV / JSON report writers
-└── state_db.py               # Resume/state store
+├── checksums/                # SHA256 checksum artifacts
+├── docs/                     # Distribution and operational notes
+├── release/windows/          # Built Windows EXE package
+└── src/                      # Python source, tests, scripts, assets
+    ├── forensicpack.py
+    ├── cli.py
+    ├── core.py
+    ├── gui.py
+    ├── scripts/build_windows.ps1
+    └── TestCases/
 ```
 
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md)
-- [GitHub Setup](docs/GITHUB_SETUP.md)
-- [Contributing](CONTRIBUTING.md)
-- [Release Checklist](RELEASE_CHECKLIST.md)
-- [Security Policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
+- [Distribution Notes](docs/README.txt)
 
 ## Testing
 
 Run the suite with:
 
 ```powershell
+cd src
 pytest -q
 ```
 
 This package revision currently passes:
 
 ```text
-42 passed
+Run `cd src && pytest -q` to validate in your environment.
 ```
 
 ## Build the Windows EXE
 
 ```powershell
-.\scripts\build_windows.ps1
+.\src\scripts\build_windows.ps1
 ```
 
 Expected build output:
 
 ```text
-dist\ForensicPack\ForensicPack.exe
+src\dist\ForensicPack\ForensicPack.exe
 ```
 
 ## Roadmap
@@ -230,4 +214,4 @@ ForensicPack is intended for lawful DFIR, digital evidence handling, packaging, 
 
 ## License
 
-Released under the MIT License. See [LICENSE](LICENSE).
+Released under the MIT License. See [LICENSE.txt](LICENSE.txt).

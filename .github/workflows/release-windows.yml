@@ -24,13 +24,14 @@ jobs:
 
       - name: Build executable
         shell: pwsh
+        working-directory: src
         run: ./scripts/build_windows.ps1
 
       - name: Package release artifact
         shell: pwsh
         run: |
           $artifactName = "ForensicPack-${{ github.ref_name }}-windows"
-          Compress-Archive -Path "dist/ForensicPack/*" -DestinationPath "$artifactName.zip" -Force
+          Compress-Archive -Path "src/dist/ForensicPack/*" -DestinationPath "$artifactName.zip" -Force
           "ARTIFACT_PATH=$artifactName.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload workflow artifact
