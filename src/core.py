@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Literal
 
-from models import CancellationToken, JobCallbacks, JobConfig, JobResult, ProgressEvent, RuntimeState, JobSkipped, JobCancelled
+from models import CancellationToken, JobCallbacks, JobConfig, JobResult, ProgressEvent, RuntimeState, JobSkipped, JobCancelled, summarize_job_results
 from archivers import verify_archive, create_archive
 from hashing import build_inventory, hash_file, write_manifest
 from state_db import StateStore, open_state_store
@@ -31,12 +31,14 @@ def _default_result(item_path: Path, config: JobConfig) -> JobResult:
         archive_path="",
         archive_size=0,
         verify="FAILED",
+        status="failed",
     )
 
 def _result_from_resume_row(row: sqlite3.Row, config: JobConfig) -> JobResult:
-    verify_value = row["verify"] or "SKIPPED (Resume Preserved)"
-    if verify_value == "PASS":
-        verify_value = "SKIPPED (Resume Preserved)"
+    warnings: list[str] = []
+    if row["warning_text"]:
+        warnings.append(row["warning_text"])
+    warnings.append("Resumed from prior completed state.")
     result = JobResult(
         case_name=row["case_name"],
         format=config.archive_fmt,
@@ -46,8 +48,9 @@ def _result_from_resume_row(row: sqlite3.Row, config: JobConfig) -> JobResult:
         source_size=row["source_size"] or "Skipped",
         archive_path=row["archive_path"] or "",
         archive_size=row["archive_size"] or 0,
-        verify=verify_value,
-        warnings=["Resumed from prior completed state."],
+        verify="SKIPPED (Resume Preserved)",
+        status="skipped",
+        warnings=warnings,
         manifest_path=row["manifest_path"] or "",
     )
     return result
@@ -64,6 +67,7 @@ def _process_single_item(
 ) -> JobResult:
     start = dt.datetime.now().isoformat(timespec="seconds")
     started_at = dt.datetime.now()
+    terminal_state: str | None = None
     result = _default_result(item_path, config)
     result.start_time = start
 
@@ -78,6 +82,9 @@ def _process_single_item(
             result.archive_path = str(existing_verify_path)
             result.archive_size = output_size_bytes(expected_archive, config)
             result.verify = "SKIPPED (Verified Existing)"
+            result.status = "skipped"
+            if callbacks.item_status_cb:
+                callbacks.item_status_cb(job_id, "skipped")
             if state_store and session_key:
                 state_store.update_job(
                     session_key,
@@ -129,9 +136,11 @@ def _process_single_item(
             )
         if config.dry_run:
             result.verify = "DRY-RUN"
+            result.status = "success"
             result.archive_path = ""
             result.archive_size = 0
             result.warnings.append("Dry-run mode: archive creation skipped.")
+            terminal_state = "done"
             callbacks.emit_progress(ProgressEvent(job_id, "done", 1, 1, f"Planned {item_path.name}"))
             callbacks.log_cb(f"  [DONE] {item_path.name} (DRY-RUN)", "#d29922")
             if state_store and session_key:
@@ -166,6 +175,7 @@ def _process_single_item(
         result.archive_path = str(final_verify_path)
         result.archive_size = output_size_bytes(final_archive, config)
         result.verify = "PASS"
+        result.status = "success"
         if state_store and session_key:
             state_store.update_job(
                 session_key,
@@ -223,13 +233,28 @@ def _process_single_item(
             )
         if config.delete_source:
             callbacks.emit_progress(ProgressEvent(job_id, "delete", 0, 1, f"Deleting source {item_path.name}"))
-            if item_path.is_file():
-                item_path.unlink()
+            try:
+                if item_path.is_file():
+                    item_path.unlink()
+                else:
+                    shutil.rmtree(item_path)
+            except OSError as exc:
+                detail = f"Archive verified, but source cleanup failed; source retained. {exc}"
+                result.verify = "PASS (SOURCE RETAINED)"
+                result.status = "warning"
+                result.warnings.append(detail)
+                terminal_state = "warning"
+                callbacks.log_cb(f"  [WARN] {item_path.name}: {detail}", "#d29922")
+                if callbacks.item_failure_cb:
+                    callbacks.item_failure_cb(job_id, detail)
             else:
-                shutil.rmtree(item_path)
-            callbacks.emit_progress(ProgressEvent(job_id, "delete", 1, 1, f"Deleted source {item_path.name}"))
+                callbacks.emit_progress(ProgressEvent(job_id, "delete", 1, 1, f"Deleted source {item_path.name}"))
         callbacks.emit_progress(ProgressEvent(job_id, "done", 1, 1, f"Completed {item_path.name}"))
-        callbacks.log_cb(f"  [DONE] {item_path.name} (PASS)", "#3fb950")
+        if terminal_state == "warning":
+            callbacks.log_cb(f"  [DONE] {item_path.name} ({result.verify})", "#d29922")
+        else:
+            callbacks.log_cb(f"  [DONE] {item_path.name} (PASS)", "#3fb950")
+            terminal_state = "done"
         if state_store and session_key:
             state_store.update_job(
                 session_key,
@@ -247,11 +272,11 @@ def _process_single_item(
     except JobSkipped:
         runtime.kill_process(job_id)
         cleanup_partial_outputs(temp_archive)
+        terminal_state = "skipped"
         result.verify = "SKIPPED"
+        result.status = "skipped"
         result.warnings.append("Job skipped by operator.")
         callbacks.log_cb(f"  [SKIP] {item_path.name}", "#d29922")
-        if callbacks.item_status_cb:
-            callbacks.item_status_cb(job_id, "skipped")
         if state_store and session_key:
             state_store.update_job(
                 session_key,
@@ -264,11 +289,11 @@ def _process_single_item(
     except JobCancelled:
         runtime.kill_process(job_id)
         cleanup_partial_outputs(temp_archive)
+        terminal_state = "cancelled"
         result.verify = "CANCELLED"
+        result.status = "cancelled"
         result.warnings.append("Job cancelled by operator.")
         callbacks.log_cb(f"  [CANCEL] {item_path.name}", "#d29922")
-        if callbacks.item_status_cb:
-            callbacks.item_status_cb(job_id, "cancelled")
         if state_store and session_key:
             state_store.update_job(
                 session_key,
@@ -281,11 +306,11 @@ def _process_single_item(
     except Exception as exc:
         runtime.kill_process(job_id)
         cleanup_partial_outputs(temp_archive)
+        terminal_state = "error"
         result.verify = "FAILED"
+        result.status = "failed"
         result.warnings.append(str(exc))
         callbacks.log_cb(f"  [ERROR] {item_path.name}: {exc}", "#f85149")
-        if callbacks.item_status_cb:
-            callbacks.item_status_cb(job_id, "error")
         if callbacks.item_failure_cb:
             callbacks.item_failure_cb(job_id, str(exc))
         if state_store and session_key:
@@ -308,8 +333,8 @@ def _process_single_item(
         result.elapsed_seconds = (dt.datetime.now() - started_at).total_seconds()
         result.manifest_path = final_manifest_name
         token.clear_skip(job_id)
-        if callbacks.item_status_cb and result.verify == "PASS":
-            callbacks.item_status_cb(job_id, "done")
+        if callbacks.item_status_cb and terminal_state:
+            callbacks.item_status_cb(job_id, terminal_state)
 
 
 def validate_config(config: JobConfig) -> None:
@@ -438,10 +463,15 @@ def run_session(config: JobConfig, callbacks: JobCallbacks, token: CancellationT
         txt_path, csv_path, json_path = report_paths(config.output_dir)
         callbacks.status_cb("Writing session report ...")
         write_reports(txt_path, csv_path, json_path, ordered_results, config)
+        summary = summarize_job_results(ordered_results)
         callbacks.progress_overall_cb(1.0)
         callbacks.status_cb("Complete")
         callbacks.log_cb(f"\n{'=' * 60}", "#58a6ff")
         callbacks.log_cb(f"  Session complete - {len(ordered_results)} item(s) processed", "#f0f6fc")
+        callbacks.log_cb(
+            f"  Summary: {summary['failed']} failed, {summary['warning']} warning, {summary['skipped']} skipped, {summary['cancelled']} cancelled",
+            "#c9d1d9",
+        )
         if config.report_json:
             callbacks.log_cb(f"  Report: {txt_path.name} / {csv_path.name} / {json_path.name}", "#c9d1d9")
         else:
@@ -520,6 +550,7 @@ def run_verify_session(
             archive_path=str(path),
             archive_size=path.stat().st_size if path.exists() else 0,
             verify="PASS" if passed else "FAILED",
+            status="success" if passed else "failed",
             manifest_path="N/A",
         )
         if passed:
@@ -633,7 +664,7 @@ def process_cases(
             if state == "running":
                 running_jobs.add(idx)
                 last_started_job_id = idx
-            elif state in {"done", "error", "skipped", "cancelled"}:
+            elif state in {"done", "warning", "error", "skipped", "cancelled"}:
                 running_jobs.discard(idx)
         if item_status_cb:
             item_status_cb(idx, state)

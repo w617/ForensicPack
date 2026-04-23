@@ -3,9 +3,11 @@ import json
 from pathlib import Path
 
 from engine import APP_NAME, APP_VERSION, HASH_NAMES, JobConfig, JobResult
+from models import summarize_job_results
 
 
 def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sys_info: dict[str, str]) -> None:
+    summary = summarize_job_results(results)
     lines = [
         f"{APP_NAME} v{APP_VERSION} - Session Report",
         f"Generated  : {dt.datetime.now().isoformat(timespec='seconds')}",
@@ -23,6 +25,7 @@ def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sy
         f"Hash Mode  : {config.archive_hash_mode}",
         f"Thread Mode: {config.thread_strategy}",
         f"Resume Used: {'Yes' if config.resume_used else 'No'}",
+        f"Summary    : {summary['success']} success, {summary['warning']} warning, {summary['failed']} failed, {summary['skipped']} skipped, {summary['cancelled']} cancelled",
     ]
 
     if config.case_metadata:
@@ -34,6 +37,7 @@ def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sy
     lines += ["", "-" * 80, ""]
     for result in results:
         lines.append(f"Case       : {result.case_name}")
+        lines.append(f"Status     : {result.status}")
         lines.append(f"Files      : {result.file_count}")
         lines.append(f"Source Size: {result.source_size}")
         lines.append(f"Archive    : {result.archive_path}")
@@ -59,6 +63,7 @@ def write_report_csv(path: Path, results: list[JobResult], config: JobConfig) ->
     fields = [
         "Case Name",
         "Format",
+        "Status",
         "Start Time",
         "End Time",
         "File Count",
@@ -101,6 +106,7 @@ def write_report_csv(path: Path, results: list[JobResult], config: JobConfig) ->
 
 
 def write_report_json(path: Path, results: list[JobResult], config: JobConfig, sys_info: dict[str, str]) -> None:
+    summary = summarize_job_results(results)
     payload = {
         "app": {"name": APP_NAME, "version": APP_VERSION},
         "generated": dt.datetime.now().isoformat(timespec="seconds"),
@@ -119,6 +125,7 @@ def write_report_json(path: Path, results: list[JobResult], config: JobConfig, s
             "resume_used": config.resume_used,
             "dry_run": config.dry_run,
         },
+        "summary": summary,
         "items": [result.to_report_row() for result in results],
     }
     if config.case_metadata:

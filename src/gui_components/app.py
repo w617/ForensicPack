@@ -980,7 +980,7 @@ class ForensicPackApp(tk.Tk):
         if not isinstance(why_btn, tk.Button):
             return
         state = str(row.get("state", ""))
-        should_show = state in {"error", "skipped", "cancelled"}
+        should_show = state in {"error", "warning", "skipped", "cancelled"}
         is_visible = bool(row.get("why_visible", False))
         if should_show and not is_visible:
             why_btn.pack(side="right", padx=(0, 6))
@@ -1175,7 +1175,7 @@ class ForensicPackApp(tk.Tk):
 
     def _update_runtime_stats(self):
         total = len(self._queue_rows)
-        completed = sum(1 for row in self._queue_rows if str(row["state"]) in {"done", "error", "skipped", "cancelled"})
+        completed = sum(1 for row in self._queue_rows if str(row["state"]) in {"done", "warning", "error", "skipped", "cancelled"})
         elapsed = self._last_elapsed_seconds
         if self._run_started_at is not None:
             elapsed = max(0.0, time.monotonic() - self._run_started_at)
@@ -1306,6 +1306,11 @@ class ForensicPackApp(tk.Tk):
             phase_lbl.config(text="done", fg=theme.GREEN)
             pb.config(style="Green.Horizontal.TProgressbar", value=100)
             row["failure_reason"] = ""
+        elif state == "warning":
+            self._running_jobs.discard(idx)
+            status_lbl.config(text="WARN", fg=theme.YELLOW)
+            phase_lbl.config(text="completed with warning", fg=theme.YELLOW)
+            pb.config(style="Yellow.Horizontal.TProgressbar", value=100)
         elif state == "error":
             self._running_jobs.discard(idx)
             status_lbl.config(text="FAILED", fg=theme.RED)
@@ -1325,7 +1330,7 @@ class ForensicPackApp(tk.Tk):
             pb.config(style="Yellow.Horizontal.TProgressbar")
             if not str(row.get("failure_reason", "")).strip():
                 row["failure_reason"] = "Job cancelled by operator."
-        if state in {"done", "error", "skipped", "cancelled"}:
+        if state in {"done", "warning", "error", "skipped", "cancelled"}:
             skip_btn = row.get("skip_btn")
             if isinstance(skip_btn, tk.Button):
                 skip_btn.config(text="Skip")
@@ -1341,7 +1346,11 @@ class ForensicPackApp(tk.Tk):
         row["failure_reason"] = reason
         phase_lbl = row.get("phase_lbl")
         if isinstance(phase_lbl, tk.Label):
-            phase_lbl.config(text="failed (see Why)", fg=theme.RED)
+            state = str(row.get("state", ""))
+            if state == "warning":
+                phase_lbl.config(text="warning (see Why)", fg=theme.YELLOW)
+            elif state == "error":
+                phase_lbl.config(text="failed (see Why)", fg=theme.RED)
         self._sync_why_button_state(row)
 
     def _update_item_progress(self, idx: int, fraction: float, phase: str):
@@ -1543,7 +1552,8 @@ class ForensicPackApp(tk.Tk):
         try:
             total = len(self._queue_rows)
             failed = sum(1 for r in self._queue_rows if r["state"] == "error")
-            msg = f"Processed {total} items. ({failed} failures)"
+            warnings = sum(1 for r in self._queue_rows if r["state"] == "warning")
+            msg = f"Processed {total} items. ({failed} failures, {warnings} warnings)"
             # Use powershell for 0-dependency toast notification
             ps_cmd = (
                 f'[void][reflection.assembly]::LoadWithPartialName("System.Windows.Forms");'

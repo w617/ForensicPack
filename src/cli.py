@@ -95,7 +95,7 @@ def run_cli(argv: list[str] | None = None) -> int:
             hash_algorithms=hashes,
             report_json=args.report_json,
         )
-        failed = any(result.verify == "FAILED" for result in results)
+        failed = any(result.is_failure for result in results)
         return 1 if failed else 0
 
     case_metadata = {
@@ -147,5 +147,5 @@ def run_cli(argv: list[str] | None = None) -> int:
         results = run_session(config, _console_callbacks(), token)
     finally:
         signal.signal(signal.SIGINT, prev_handler)
-    failed = any(result.verify in {"FAILED", "CANCELLED"} for result in results)
+    failed = any(result.causes_nonzero_exit for result in results)
     return 1 if failed else 0

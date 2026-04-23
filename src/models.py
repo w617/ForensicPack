@@ -2,7 +2,10 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, TypeAlias
+
+
+ResultStatus: TypeAlias = Literal["success", "warning", "failed", "skipped", "cancelled"]
 
 
 class JobCancelled(Exception):
@@ -71,16 +74,30 @@ class JobResult:
     archive_path: str
     archive_size: int | str
     verify: str
+    status: ResultStatus | str = ""
     hashes: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     manifest_path: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.status:
+            self.status = infer_result_status(self.verify)
+
+    @property
+    def is_failure(self) -> bool:
+        return self.status == "failed"
+
+    @property
+    def causes_nonzero_exit(self) -> bool:
+        return self.status in {"failed", "cancelled"}
 
     def to_report_row(self) -> dict[str, object]:
         from engine import HASH_NAMES
         row = {
             "Case Name": self.case_name,
             "Format": self.format,
+            "Status": self.status,
             "Start Time": self.start_time,
             "End Time": self.end_time,
             "File Count": self.file_count,
@@ -95,6 +112,34 @@ class JobResult:
         for alg in HASH_NAMES:
             row[alg] = self.hashes.get(alg, "")
         return row
+
+
+def infer_result_status(verify: str) -> ResultStatus:
+    normalized = (verify or "").strip().upper()
+    if normalized.startswith("PASS"):
+        if "SOURCE RETAINED" in normalized:
+            return "warning"
+        return "success"
+    if normalized.startswith("DRY-RUN"):
+        return "success"
+    if normalized.startswith("SKIPPED"):
+        return "skipped"
+    if normalized.startswith("CANCELLED"):
+        return "cancelled"
+    return "failed"
+
+
+def summarize_job_results(results: list[JobResult]) -> dict[ResultStatus, int]:
+    counts: dict[ResultStatus, int] = {
+        "success": 0,
+        "warning": 0,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0,
+    }
+    for result in results:
+        counts[result.status] += 1
+    return counts
 
 
 @dataclass

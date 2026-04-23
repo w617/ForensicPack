@@ -157,6 +157,48 @@ def test_skip_existing_requires_verified_archive(sample_source: Path, tmp_path: 
     assert all(result.verify == "SKIPPED (Verified Existing)" for result in results)
 
 
+def test_delete_source_permission_error_preserves_archive_and_marks_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    evidence = source / "disk-image.dmg"
+    evidence.write_bytes(b"disk-image-data")
+    output = tmp_path / "output"
+
+    original_unlink = Path.unlink
+
+    def guarded_unlink(self: Path, *args, **kwargs):
+        if self == evidence:
+            raise PermissionError(5, "Access is denied", str(self))
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+    config = JobConfig(
+        source_dir=source,
+        output_dir=output,
+        archive_fmt="ZIP",
+        compress_level_label="Normal (5)",
+        split_enabled=False,
+        split_size_str="",
+        hash_algorithms=["SHA256"],
+        password=None,
+        delete_source=True,
+        skip_existing=False,
+        threads=1,
+    )
+    results = run_session(config, _callbacks(), CancellationToken())
+    assert len(results) == 1
+    assert results[0].verify == "PASS (SOURCE RETAINED)"
+    assert results[0].status == "warning"
+    assert Path(results[0].archive_path).exists()
+    assert evidence.exists()
+    assert any("source cleanup failed" in warning for warning in results[0].warnings)
+    report_csv = next(output.glob("ForensicPack_Report_*.csv"))
+    with report_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["Status"] == "warning"
+
+
 def test_cancel_during_manifest_leaves_no_final_archive(sample_source: Path, tmp_path: Path):
     output = tmp_path / "output"
     token = CancellationToken()
@@ -442,6 +484,22 @@ def test_cli_returns_zero_when_all_jobs_pass(tmp_path: Path, monkeypatch: pytest
     assert exit_code == 0
 
 
+def test_cli_returns_zero_when_jobs_only_warn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(cli, "run_session", lambda *_args, **_kwargs: [_result_with_status("PASS (SOURCE RETAINED)")])
+    exit_code = cli.run_cli(
+        [
+            "pack",
+            "--source",
+            str(tmp_path / "source"),
+            "--output",
+            str(tmp_path / "output"),
+            "--format",
+            "zip",
+        ]
+    )
+    assert exit_code == 0
+
+
 def test_hash_normalization_populates_hash_columns(sample_source: Path, tmp_path: Path):
     output = tmp_path / "output"
     config = JobConfig(
@@ -490,6 +548,7 @@ def test_session_allows_hashing_disabled(sample_source: Path, tmp_path: Path):
     with report_csv.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows
+    assert all(row["Status"] == "success" for row in rows)
     assert all(not row["SHA256"] for row in rows)
     assert all(not row["SHA512"] for row in rows)
 
@@ -627,6 +686,7 @@ def test_dry_run_creates_no_archives(sample_source: Path, tmp_path: Path):
     )
     results = run_session(config, _callbacks(), CancellationToken())
     assert all(result.verify == "DRY-RUN" for result in results)
+    assert all(result.status == "success" for result in results)
     assert not list(output.glob("*.zip"))
 
 

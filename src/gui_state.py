@@ -181,7 +181,7 @@ def matches_queue_filter(state: str, selected_filter: str) -> bool:
     if selected_filter == "Running":
         return normalized == "running"
     if selected_filter == "Done":
-        return normalized == "done"
+        return normalized in {"done", "warning"}
     if selected_filter == "Failed":
         return normalized in {"error", "failed"}
     if selected_filter == "Skipped":
@@ -194,7 +194,7 @@ def queue_filter_counts(states: list[str]) -> dict[str, int]:
     return {
         "All": len(states),
         "Running": sum(1 for state in lowered if state == "running"),
-        "Done": sum(1 for state in lowered if state == "done"),
+        "Done": sum(1 for state in lowered if state in {"done", "warning"}),
         "Failed": sum(1 for state in lowered if state in {"error", "failed"}),
         "Skipped": sum(1 for state in lowered if state in {"skipped", "cancelled"}),
     }

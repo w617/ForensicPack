@@ -145,10 +145,11 @@ def test_apply_widget_bindings_disable_enable_roundtrip():
 
 
 def test_queue_filter_counts_and_matching():
-    states = ["queued", "running", "done", "error", "skipped", "cancelled"]
+    states = ["queued", "running", "done", "warning", "error", "skipped", "cancelled"]
     counts = queue_filter_counts(states)
-    assert counts == {"All": 6, "Running": 1, "Done": 1, "Failed": 1, "Skipped": 2}
+    assert counts == {"All": 7, "Running": 1, "Done": 2, "Failed": 1, "Skipped": 2}
     assert matches_queue_filter("running", "Running") is True
+    assert matches_queue_filter("warning", "Done") is True
     assert matches_queue_filter("done", "Failed") is False
     assert matches_queue_filter("cancelled", "Skipped") is True
     assert matches_queue_filter("queued", "All") is True
