@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from models import ResultStatus
+
 from engine import JobConfig
 
 
-GUI_SETTINGS_SCHEMA_VERSION = 1
+GUI_SETTINGS_SCHEMA_VERSION = 2
 
 GUI_SETTINGS_DEFAULTS: dict[str, object] = {
     "schema_version": GUI_SETTINGS_SCHEMA_VERSION,
@@ -40,6 +42,77 @@ GUI_SETTINGS_DEFAULTS: dict[str, object] = {
     "metadata_evidence_id": "",
     "metadata_notes": "",
     "hash_threads": 4,
+    "run_mode": "pack",
+    "selected_preset": "Custom",
+    "recent_sources": [],
+    "recent_outputs": [],
+}
+
+GUI_PRESETS: dict[str, dict[str, object]] = {
+    "Lab Intake ZIP": {
+        "run_mode": "pack",
+        "archive_fmt": "ZIP",
+        "compress_level_label": "Normal (5)",
+        "hash_algorithms": ["SHA256"],
+        "split_enabled": False,
+        "delete_source": False,
+        "dry_run": False,
+        "resume_enabled": True,
+        "report_json": True,
+        "embed_manifest_in_archive": True,
+    },
+    "Transfer 7z Split": {
+        "run_mode": "pack",
+        "archive_fmt": "7z",
+        "compress_level_label": "Maximum (7)",
+        "hash_algorithms": ["SHA256", "SHA512"],
+        "split_enabled": True,
+        "split_size_str": "4",
+        "delete_source": False,
+        "resume_enabled": True,
+        "report_json": True,
+        "embed_manifest_in_archive": True,
+    },
+    "Inventory Dry Run": {
+        "run_mode": "pack",
+        "archive_fmt": "ZIP",
+        "compress_level_label": "Normal (5)",
+        "hash_algorithms": ["SHA256"],
+        "dry_run": True,
+        "delete_source": False,
+        "report_json": True,
+        "embed_manifest_in_archive": True,
+    },
+    "Verify Existing Archives": {
+        "run_mode": "verify",
+        "hash_algorithms": ["SHA256"],
+        "delete_source": False,
+        "report_json": True,
+        "resume_enabled": False,
+        "dry_run": False,
+    },
+}
+
+PACK_ONLY_PRESET_KEYS = {
+    "archive_fmt",
+    "compress_level_label",
+    "split_enabled",
+    "split_size_str",
+    "delete_source",
+    "resume_enabled",
+    "dry_run",
+    "embed_manifest_in_archive",
+}
+
+PHASE_LABELS = {
+    "scan": "Scanning source",
+    "manifest": "Hashing source files",
+    "archive": "Building archive",
+    "verify": "Verifying archive",
+    "hash_archive": "Hashing final archive",
+    "delete": "Deleting original source",
+    "done": "Completed",
+    "resume": "Resume skip",
 }
 
 
@@ -79,6 +152,10 @@ class GuiSettings:
     metadata_evidence_id: str = ""
     metadata_notes: str = ""
     hash_threads: int = 4
+    run_mode: str = "pack"
+    selected_preset: str = "Custom"
+    recent_sources: list[str] | None = None
+    recent_outputs: list[str] | None = None
 
 
 def settings_path() -> Path:
@@ -120,6 +197,71 @@ def save_gui_settings(settings: dict[str, object], path: Path | None = None) -> 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return target
+
+
+def available_preset_names() -> list[str]:
+    return ["Custom", *GUI_PRESETS]
+
+
+def apply_gui_preset(settings: dict[str, object], preset_name: str) -> dict[str, object]:
+    merged = _upgrade_settings(settings)
+    if preset_name == "Custom":
+        merged["selected_preset"] = "Custom"
+        return merged
+    preset = GUI_PRESETS.get(preset_name)
+    if preset is None:
+        return merged
+    for key, value in preset.items():
+        merged[key] = list(value) if isinstance(value, list) else value
+    if merged.get("run_mode") == "verify":
+        for key in PACK_ONLY_PRESET_KEYS:
+            if key == "delete_source":
+                merged[key] = False
+    merged["selected_preset"] = preset_name
+    return merged
+
+
+def push_recent_value(values: list[str] | None, value: str, limit: int = 8) -> list[str]:
+    candidate = (value or "").strip()
+    existing = list(values or [])
+    if not candidate:
+        return existing[:limit]
+    lowered = candidate.lower()
+    deduped = [candidate]
+    for current in existing:
+        if current.strip() and current.lower() != lowered:
+            deduped.append(current)
+    return deduped[:limit]
+
+
+def friendly_phase_label(phase: str, run_mode: str = "pack") -> str:
+    normalized = (phase or "").strip().lower().replace("-", "_")
+    if run_mode == "verify" and normalized == "verify":
+        return "Verifying archive"
+    return PHASE_LABELS.get(normalized, normalized.replace("_", " ").title() if normalized else "Idle")
+
+
+def summarize_completion(states: list[str]) -> dict[str, int]:
+    lowered = [state.lower() for state in states]
+    return {
+        "total": len(states),
+        "success": sum(1 for state in lowered if state == "done"),
+        "warning": sum(1 for state in lowered if state == "warning"),
+        "failed": sum(1 for state in lowered if state in {"error", "failed"}),
+        "skipped": sum(1 for state in lowered if state == "skipped"),
+        "cancelled": sum(1 for state in lowered if state == "cancelled"),
+    }
+
+
+def status_to_queue_state(status: ResultStatus | str) -> str:
+    mapping = {
+        "success": "done",
+        "warning": "warning",
+        "failed": "error",
+        "skipped": "skipped",
+        "cancelled": "cancelled",
+    }
+    return mapping.get(str(status), str(status))
 
 
 def requires_destructive_confirmation(config: JobConfig) -> bool:

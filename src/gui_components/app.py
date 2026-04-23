@@ -24,22 +24,29 @@ from engine import (
     JobCallbacks,
     JobConfig,
     find_7zip,
+    run_verify_session,
     run_session,
 )
 
 from gui_assets import TITLE_BANNER_CANDIDATES, resolve_first_existing_gui_asset, resolve_gui_asset_path
 from gui_state import (
     WidgetStateBinding,
+    apply_gui_preset,
     apply_widget_bindings,
+    available_preset_names,
     build_run_summary,
     estimate_eta_seconds,
     format_duration,
+    friendly_phase_label,
     load_gui_settings,
     matches_queue_filter,
+    push_recent_value,
     queue_filter_counts,
     requires_destructive_confirmation,
     save_gui_settings,
     settings_path,
+    status_to_queue_state,
+    summarize_completion,
     validate_destructive_confirmation,
     build_windows_elevation_command,
     is_permission_error,
@@ -71,10 +78,22 @@ class ForensicPackApp(tk.Tk):
         self._current_phase = "idle"
         self._last_report_path = ""
         self._last_output_dir = ""
+        self._last_completion_summary = ""
+        self._last_issue_lines: list[str] = []
+        self._completion_win: tk.Toplevel | None = None
+        self._path_recent_menus: dict[str, tuple[tk.Menubutton, tk.Menu, tk.StringVar]] = {}
+        self._has_tkdnd = self._init_optional_tkdnd()
         self._apply_window_icon()
         self._build_ui()
         self._apply_style()
         self.after(50, self._drain_ui_queue)
+
+    def _init_optional_tkdnd(self) -> bool:
+        try:
+            self.tk.call("package", "require", "tkdnd")
+            return True
+        except tk.TclError:
+            return False
 
     def _apply_style(self):
         style = ttk.Style(self)
@@ -128,6 +147,7 @@ class ForensicPackApp(tk.Tk):
         self._build_case_panel(left)
         self._build_queue_panel(right)
         self._build_log_panel(right)
+        self._apply_mode_state()
 
     def _build_title_brand(self, parent) -> bool:
         banner = self._load_title_banner()
@@ -215,15 +235,85 @@ class ForensicPackApp(tk.Tk):
         inner.pack(fill="x", padx=14, pady=(0, 12))
         return inner
 
-    def _browse_btn(self, parent, var):
+    def _current_run_mode(self) -> str:
+        return getattr(self, "_run_mode_var", tk.StringVar(value=str(self._settings.get("run_mode", "pack")))).get()
+
+    def _choose_source_path(self) -> str:
+        if self._current_run_mode() == "verify":
+            selected_file = filedialog.askopenfilename(
+                title="Select Archive File",
+                filetypes=[
+                    ("Supported archives", "*.zip *.7z *.001 *.tar.gz *.tar.bz2"),
+                    ("All Files", "*.*"),
+                ],
+            )
+            if selected_file:
+                return selected_file
+        selected_dir = filedialog.askdirectory(mustexist=False)
+        return selected_dir or ""
+
+    def _browse_btn(self, parent, var, role: str):
         def _pick():
-            selected = filedialog.askdirectory(mustexist=False)
+            selected = self._choose_source_path() if role == "source" else filedialog.askdirectory(mustexist=False)
             if selected:
                 var.set(selected)
         btn = tk.Button(parent, text="Browse ...", command=_pick, bg=theme.BG3, fg=theme.ACCENT, font=FONT_MAIN, relief="flat", activebackground=theme.ACCENT, activeforeground=theme.BG, cursor="hand2", padx=10)
         btn.pack(side="right", padx=(6, 0))
         self._register_mutable(btn)
         return btn
+
+    def _paste_path_into(self, var: tk.StringVar) -> None:
+        try:
+            text = self.clipboard_get().strip()
+        except tk.TclError:
+            messagebox.showinfo("Clipboard Empty", "Clipboard does not contain a usable path.")
+            return
+        if text:
+            var.set(text.strip('"'))
+
+    def _refresh_recent_path_menu(self, role: str) -> None:
+        entry = self._path_recent_menus.get(role)
+        if entry is None:
+            return
+        button, menu, var = entry
+        menu.delete(0, "end")
+        key = "recent_sources" if role == "source" else "recent_outputs"
+        values = list(self._settings.get(key, []))
+        if not values:
+            menu.add_command(label="No recent paths yet", state="disabled")
+            button.config(state="disabled")
+            return
+        for value in values:
+            menu.add_command(label=value, command=lambda current=value: var.set(current))
+        button.config(state="normal")
+
+    def _recent_btn(self, parent, role: str, var: tk.StringVar):
+        btn = tk.Menubutton(parent, text="Recent", bg=theme.BG3, fg=theme.FG2, relief="flat", cursor="hand2", padx=10)
+        menu = tk.Menu(btn, tearoff=False)
+        btn.config(menu=menu)
+        btn.pack(side="right", padx=(6, 0))
+        self._path_recent_menus[role] = (btn, menu, var)
+        self._refresh_recent_path_menu(role)
+        return btn
+
+    def _register_drop_target(self, widget, setter) -> None:
+        if not self._has_tkdnd:
+            return
+        try:
+            self.tk.call("tkdnd::drop_target", "register", widget, "DND_Files")
+
+            def _on_drop(event):
+                try:
+                    values = self.tk.splitlist(event.data)
+                except tk.TclError:
+                    values = [event.data]
+                if values:
+                    setter(str(values[0]).strip("{}"))
+                return "break"
+
+            widget.bind("<<Drop>>", _on_drop)
+        except Exception:
+            pass
 
     def _browse_state_db_btn(self, parent):
         def _pick():
@@ -260,6 +350,8 @@ class ForensicPackApp(tk.Tk):
         )
         btn.pack(side="right", padx=(6, 0))
         self._register_mutable(btn)
+        if hasattr(self, "_verify_disabled_widgets"):
+            self._verify_disabled_widgets.append((btn, "normal"))
         return btn
 
     def _clear_state_db_btn(self, parent):
@@ -278,6 +370,8 @@ class ForensicPackApp(tk.Tk):
         )
         btn.pack(side="right", padx=(6, 0))
         self._register_mutable(btn)
+        if hasattr(self, "_verify_disabled_widgets"):
+            self._verify_disabled_widgets.append((btn, "normal"))
         return btn
 
     def _help_btn(self, parent, title, message):
@@ -302,32 +396,42 @@ class ForensicPackApp(tk.Tk):
         inner = self._card(parent, "Source & Destination")
         self._src_var = tk.StringVar(value=str(self._settings.get("source_dir", "")))
         self._dst_var = tk.StringVar(value=str(self._settings.get("output_dir", "")))
-        for label, var in [("Source Folder:", self._src_var), ("Output Folder:", self._dst_var)]:
+        self._path_labels: dict[str, tk.Label] = {}
+        self._path_entries: dict[str, tk.Entry] = {}
+        for role, label, var in [("source", "Source Folder:", self._src_var), ("output", "Output Folder:", self._dst_var)]:
             row = tk.Frame(inner, bg=theme.BG2)
             row.pack(fill="x", pady=3)
-            tk.Label(row, text=label, width=16, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
+            lbl = tk.Label(row, text=label, width=16, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN)
+            lbl.pack(side="left")
+            self._path_labels[role] = lbl
             entry = tk.Entry(row, textvariable=var, bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT)
             entry.pack(side="left", fill="x", expand=True)
+            self._path_entries[role] = entry
             self._register_mutable(entry)
-            self._browse_btn(row, var)
+            self._register_drop_target(entry, var.set)
+            paste_btn = tk.Button(row, text="Paste", command=lambda current=var: self._paste_path_into(current), bg=theme.BG3, fg=theme.FG2, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.WHITE, cursor="hand2", padx=10)
+            paste_btn.pack(side="right", padx=(6, 0))
+            self._register_mutable(paste_btn)
+            self._recent_btn(row, role, var)
+            self._browse_btn(row, var, role)
 
         self._delete_src_var = tk.BooleanVar(value=bool(self._settings.get("delete_source", False)))
         delete_row = tk.Frame(inner, bg=theme.BG2)
         delete_row.pack(fill="x", pady=(6, 0))
-        delete_cb = tk.Checkbutton(delete_row, text="Delete source item after successful verification", variable=self._delete_src_var, bg=theme.BG2, fg=theme.RED, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
-        delete_cb.pack(side="left")
+        self._delete_cb = tk.Checkbutton(delete_row, text="Delete source item after successful verification", variable=self._delete_src_var, bg=theme.BG2, fg=theme.RED, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
+        self._delete_cb.pack(side="left")
         self._help_btn(delete_row, "Delete Source", "After successful archive verification, the original source item is permanently removed. Use only when your retention policy allows it.")
-        self._register_mutable(delete_cb)
+        self._register_mutable(self._delete_cb)
         self._skip_existing_var = tk.BooleanVar(value=bool(self._settings.get("skip_existing", False)))
         skip_row = tk.Frame(inner, bg=theme.BG2)
         skip_row.pack(fill="x", pady=(4, 0))
-        skip_cb = tk.Checkbutton(skip_row, text="Skip existing archives only if they verify cleanly", variable=self._skip_existing_var, bg=theme.BG2, fg=theme.FG, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
-        skip_cb.pack(side="left")
+        self._skip_existing_cb = tk.Checkbutton(skip_row, text="Skip existing archives only if they verify cleanly", variable=self._skip_existing_var, bg=theme.BG2, fg=theme.FG, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
+        self._skip_existing_cb.pack(side="left")
         self._help_btn(skip_row, "Skip Existing Archives", "When enabled, ForensicPack verifies an existing output archive first. If verification passes, that item is skipped instead of repacked.")
-        self._register_mutable(skip_cb)
+        self._register_mutable(self._skip_existing_cb)
         selector_row = tk.Frame(inner, bg=theme.BG2)
         selector_row.pack(fill="x", pady=(6, 0))
-        select_btn = tk.Button(
+        self._select_items_btn = tk.Button(
             selector_row,
             text="Scan & Select Items ...",
             command=self._open_item_selector,
@@ -340,9 +444,9 @@ class ForensicPackApp(tk.Tk):
             cursor="hand2",
             padx=10,
         )
-        select_btn.pack(side="left")
-        self._register_mutable(select_btn)
-        clear_btn = tk.Button(
+        self._select_items_btn.pack(side="left")
+        self._register_mutable(self._select_items_btn)
+        self._clear_selection_btn = tk.Button(
             selector_row,
             text="Use All",
             command=self._clear_item_selection,
@@ -355,8 +459,8 @@ class ForensicPackApp(tk.Tk):
             cursor="hand2",
             padx=10,
         )
-        clear_btn.pack(side="left", padx=(8, 0))
-        self._register_mutable(clear_btn)
+        self._clear_selection_btn.pack(side="left", padx=(8, 0))
+        self._register_mutable(self._clear_selection_btn)
         self._help_btn(selector_row, "Scan & Select Items", "Lets you choose only specific source children for this run. Use 'Use All' to clear filtering.")
         reset_settings_btn = tk.Button(
             selector_row,
@@ -376,7 +480,7 @@ class ForensicPackApp(tk.Tk):
         self._selected_items_var = tk.StringVar()
         self._update_selected_items_label()
         tk.Label(inner, textvariable=self._selected_items_var, fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9), wraplength=420, justify="left").pack(anchor="w", pady=(4, 0))
-        tk.Label(
+        self._path_hint_lbl = tk.Label(
             inner,
             text="Basic step 1: choose source/output, then optionally scan and pick specific direct children to process.",
             fg=theme.FG2,
@@ -384,11 +488,100 @@ class ForensicPackApp(tk.Tk):
             font=("Segoe UI", 9),
             wraplength=420,
             justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self._path_hint_lbl.pack(anchor="w", pady=(4, 0))
 
     def _clear_item_selection(self):
         self._selected_item_names = None
         self._update_selected_items_label()
+
+    def _set_widget_state(self, widget, state: str) -> None:
+        try:
+            widget.configure(state=state)
+        except Exception:
+            try:
+                widget.config(state=state)
+            except Exception:
+                pass
+
+    def _apply_selected_preset(self) -> None:
+        self._settings = apply_gui_preset(self._collect_settings_payload(), self._preset_var.get())
+        self._apply_settings_to_controls(self._settings)
+        self._status_var.set(f"Preset applied: {self._preset_var.get()}")
+
+    def _apply_settings_to_controls(self, settings: dict[str, object]) -> None:
+        self._run_mode_var.set(str(settings.get("run_mode", "pack")))
+        self._fmt_var.set(str(settings.get("archive_fmt", ARCHIVE_FORMATS[0])))
+        self._level_var.set(str(settings.get("compress_level_label", "Normal (5)")))
+        self._split_enabled.set(bool(settings.get("split_enabled", False)))
+        self._split_size_var.set(str(settings.get("split_size_str", "4")))
+        self._delete_src_var.set(bool(settings.get("delete_source", False)))
+        self._skip_existing_var.set(bool(settings.get("skip_existing", False)))
+        self._resume_var.set(bool(settings.get("resume_enabled", False)))
+        self._dry_run_var.set(bool(settings.get("dry_run", False)))
+        self._fast_scan_var.set(str(settings.get("scan_mode", "deterministic")) == "fast")
+        self._skip_archive_hash_var.set(str(settings.get("archive_hash_mode", "always")) == "skip")
+        self._report_json_var.set(bool(settings.get("report_json", False)))
+        self._embed_manifest_in_archive_var.set(bool(settings.get("embed_manifest_in_archive", True)))
+        self._auto_threads_var.set(bool(settings.get("auto_threads", False)))
+        self._threads_var.set(int(settings.get("threads", 4)))
+        self._progress_interval_var.set(int(settings.get("progress_interval_ms", 200)))
+        self._hash_threads_var.set(int(settings.get("hash_threads", 4)))
+        self._state_db_var.set(str(settings.get("state_db_path", "")))
+        selected_hashes = {str(value) for value in settings.get("hash_algorithms", ["SHA256"])}
+        for alg, var in self._hash_vars.items():
+            var.set(alg in selected_hashes)
+        self._preset_var.set(str(settings.get("selected_preset", "Custom")))
+        self._refresh_archive_hash_option_state()
+        self._on_format_changed()
+        self._apply_mode_state()
+
+    def _on_mode_changed(self, _event=None) -> None:
+        if self._preset_var.get() != "Custom":
+            self._preset_var.set("Custom")
+        self._apply_mode_state()
+
+    def _apply_mode_state(self) -> None:
+        mode = self._current_run_mode()
+        is_verify = mode == "verify"
+        self._path_labels["source"].config(text="Verify Input:" if is_verify else "Source Folder:")
+        self._path_labels["output"].config(text="Report Folder:" if is_verify else "Output Folder:")
+        self._path_hint_lbl.config(
+            text=(
+                "Choose an archive file or folder of archives to verify. You can browse, paste, reuse recent paths, and drag-drop when tkdnd is available."
+                if is_verify
+                else "Basic step 1: choose source/output, then optionally scan and pick specific direct children to process. You can browse, paste, reuse recent paths, and drag-drop when tkdnd is available."
+            )
+        )
+        self._archive_hint_lbl.config(
+            text=(
+                "Verify mode auto-detects supported archive formats. Packaging-specific controls below are disabled."
+                if is_verify
+                else "Basic step 2: choose archive format and compression. Advanced behavior is below."
+            )
+        )
+        self._run_hint_lbl.config(
+            text=(
+                "Preflight checks run before verify sessions and show target counts, output diagnostics, and warning details."
+                if is_verify
+                else "Before run, a session summary appears. Destructive mode requires typing DELETE."
+            )
+        )
+        self._start_btn.config(text="Start Verification" if is_verify else "Start Processing")
+        pack_state = "disabled" if is_verify else "normal"
+        readonly_state = "disabled" if is_verify else "readonly"
+        for widget in [self._delete_cb, self._skip_existing_cb, self._select_items_btn, self._clear_selection_btn]:
+            self._set_widget_state(widget, pack_state)
+        for widget, state in [(self._format_cb, readonly_state), (self._level_cb, readonly_state), (self._split_entry, pack_state)]:
+            self._set_widget_state(widget, state)
+        for widget, default_state in getattr(self, "_verify_disabled_widgets", []):
+            self._set_widget_state(widget, "disabled" if is_verify else default_state)
+        if is_verify:
+            self._split_enabled.set(False)
+            self._delete_src_var.set(False)
+            self._use_metadata_var.set(False)
+        self._on_format_changed()
+        self._on_metadata_toggle()
 
     def _reset_saved_settings(self):
         if not messagebox.askyesno("Reset Saved Settings", "Clear persisted GUI settings and blank Source/Output fields?"):
@@ -400,12 +593,16 @@ class ForensicPackApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Reset Failed", f"Could not remove settings file:\n{exc}")
             return
+        self._settings = load_gui_settings(path=settings_file)
         self._src_var.set("")
         self._dst_var.set("")
         self._selected_item_names = None
         self._update_selected_items_label()
         self._last_report_path = ""
         self._last_output_dir = ""
+        self._apply_settings_to_controls(self._settings)
+        self._refresh_recent_path_menu("source")
+        self._refresh_recent_path_menu("output")
         self._status_var.set("Saved settings reset.")
         messagebox.showinfo("Settings Reset", f"Saved settings were reset.\n{settings_file}")
 
@@ -613,9 +810,11 @@ class ForensicPackApp(tk.Tk):
     def _build_case_panel(self, parent):
         inner = self._card(parent, "Case Metadata (Optional)")
         self._use_metadata_var = tk.BooleanVar(value=bool(self._settings.get("use_metadata", False)))
-        metadata_cb = tk.Checkbutton(inner, text="Enable forensic reporting metadata", variable=self._use_metadata_var, command=self._on_metadata_toggle, bg=theme.BG2, fg=theme.ACCENT, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=("Segoe UI", 10, "bold"), cursor="hand2")
-        metadata_cb.pack(anchor="w", pady=(0, 8))
-        self._register_mutable(metadata_cb)
+        self._metadata_cb = tk.Checkbutton(inner, text="Enable forensic reporting metadata", variable=self._use_metadata_var, command=self._on_metadata_toggle, bg=theme.BG2, fg=theme.ACCENT, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=("Segoe UI", 10, "bold"), cursor="hand2")
+        self._metadata_cb.pack(anchor="w", pady=(0, 8))
+        self._register_mutable(self._metadata_cb)
+        if hasattr(self, "_verify_disabled_widgets"):
+            self._verify_disabled_widgets.append((self._metadata_cb, "normal"))
         self._meta_fields_frame = tk.Frame(inner, bg=theme.BG2)
         self._meta_fields_frame.pack(fill="x")
         self._meta_vars = {
@@ -641,24 +840,46 @@ class ForensicPackApp(tk.Tk):
 
     def _build_archive_panel(self, parent):
         inner = self._card(parent, "Basic Archive Setup")
+        mode_row = tk.Frame(inner, bg=theme.BG2)
+        mode_row.pack(fill="x", pady=3)
+        tk.Label(mode_row, text="Mode:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
+        self._run_mode_var = tk.StringVar(value=str(self._settings.get("run_mode", "pack")))
+        mode_cb = ttk.Combobox(mode_row, textvariable=self._run_mode_var, values=["pack", "verify"], state="readonly", width=14)
+        mode_cb.pack(side="left")
+        mode_cb.bind("<<ComboboxSelected>>", self._on_mode_changed)
+        self._register_mutable(mode_cb, enabled_state="readonly", disabled_state="disabled")
+        self._help_btn(mode_row, "Mode", "Use 'pack' for normal evidence packaging and 'verify' to validate existing archives and generate reports without repacking.")
+
+        preset_row = tk.Frame(inner, bg=theme.BG2)
+        preset_row.pack(fill="x", pady=3)
+        tk.Label(preset_row, text="Preset:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
+        self._preset_var = tk.StringVar(value=str(self._settings.get("selected_preset", "Custom")))
+        preset_cb = ttk.Combobox(preset_row, textvariable=self._preset_var, values=available_preset_names(), state="readonly", width=24)
+        preset_cb.pack(side="left")
+        self._register_mutable(preset_cb, enabled_state="readonly", disabled_state="disabled")
+        apply_preset_btn = tk.Button(preset_row, text="Apply", command=self._apply_selected_preset, bg=theme.BG3, fg=theme.ACCENT, relief="flat", cursor="hand2", padx=10)
+        apply_preset_btn.pack(side="left", padx=(8, 0))
+        self._register_mutable(apply_preset_btn)
+
         row1 = tk.Frame(inner, bg=theme.BG2)
         row1.pack(fill="x", pady=3)
         tk.Label(row1, text="Format:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._fmt_var = tk.StringVar(value=str(self._settings.get("archive_fmt", ARCHIVE_FORMATS[0])))
-        format_cb = ttk.Combobox(row1, textvariable=self._fmt_var, values=ARCHIVE_FORMATS, state="readonly", width=14)
-        format_cb.pack(side="left")
-        format_cb.bind("<<ComboboxSelected>>", self._on_format_changed)
-        self._register_mutable(format_cb, enabled_state="readonly", disabled_state="disabled")
+        self._format_cb = ttk.Combobox(row1, textvariable=self._fmt_var, values=ARCHIVE_FORMATS, state="readonly", width=14)
+        self._format_cb.pack(side="left")
+        self._format_cb.bind("<<ComboboxSelected>>", self._on_format_changed)
+        self._register_mutable(self._format_cb, enabled_state="readonly", disabled_state="disabled")
 
         row2 = tk.Frame(inner, bg=theme.BG2)
         row2.pack(fill="x", pady=3)
         tk.Label(row2, text="Compression:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._level_var = tk.StringVar(value=str(self._settings.get("compress_level_label", "Normal (5)")))
-        level_cb = ttk.Combobox(row2, textvariable=self._level_var, values=list(COMPRESSION_LEVELS.keys()), state="readonly", width=22)
-        level_cb.pack(side="left")
-        self._register_mutable(level_cb, enabled_state="readonly", disabled_state="disabled")
+        self._level_cb = ttk.Combobox(row2, textvariable=self._level_var, values=list(COMPRESSION_LEVELS.keys()), state="readonly", width=22)
+        self._level_cb.pack(side="left")
+        self._register_mutable(self._level_cb, enabled_state="readonly", disabled_state="disabled")
 
-        tk.Label(inner, text="Basic step 2: choose archive format and compression. Advanced behavior is below.", fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9), wraplength=420, justify="left").pack(anchor="w", pady=(4, 8))
+        self._archive_hint_lbl = tk.Label(inner, text="Basic step 2: choose archive format and compression. Advanced behavior is below.", fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9), wraplength=420, justify="left")
+        self._archive_hint_lbl.pack(anchor="w", pady=(4, 8))
 
         controls_row = tk.Frame(inner, bg=theme.BG2)
         controls_row.pack(fill="x", pady=(4, 0))
@@ -666,20 +887,24 @@ class ForensicPackApp(tk.Tk):
         self._start_btn.pack(side="left", padx=(0, 10))
         self._cancel_btn = tk.Button(controls_row, text="Cancel All", command=self._cancel, bg=theme.BG3, fg=theme.RED, font=FONT_HEAD, relief="flat", activebackground=theme.RED, activeforeground=theme.WHITE, cursor="hand2", padx=14, pady=8, state="disabled")
         self._cancel_btn.pack(side="left")
-        tk.Label(inner, text="Before run, a session summary appears. Destructive mode requires typing DELETE.", fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9), wraplength=420, justify="left").pack(anchor="w", pady=(6, 0))
+        self._run_hint_lbl = tk.Label(inner, text="Before run, a session summary appears. Destructive mode requires typing DELETE.", fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9), wraplength=420, justify="left")
+        self._run_hint_lbl.pack(anchor="w", pady=(6, 0))
 
     def _build_advanced_options_panel(self, parent):
         inner = self._card(parent, "Advanced Runtime Policies")
+        self._verify_disabled_widgets: list[tuple[object, str]] = []
         split_row = tk.Frame(inner, bg=theme.BG2)
         split_row.pack(fill="x", pady=3)
         self._split_enabled = tk.BooleanVar(value=bool(self._settings.get("split_enabled", False)))
-        split_cb = tk.Checkbutton(split_row, text="Split Archive (7z only):", variable=self._split_enabled, command=self._on_split_toggle, bg=theme.BG2, fg=theme.FG, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
-        split_cb.pack(side="left")
-        self._register_mutable(split_cb)
+        self._split_cb = tk.Checkbutton(split_row, text="Split Archive (7z only):", variable=self._split_enabled, command=self._on_split_toggle, bg=theme.BG2, fg=theme.FG, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=FONT_MAIN, cursor="hand2")
+        self._split_cb.pack(side="left")
+        self._register_mutable(self._split_cb)
+        self._verify_disabled_widgets.append((self._split_cb, "normal"))
         self._split_size_var = tk.StringVar(value=str(self._settings.get("split_size_str", "4")))
         self._split_entry = tk.Entry(split_row, textvariable=self._split_size_var, bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, width=6, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT, state="disabled", disabledbackground=theme.BG3, disabledforeground=theme.FG2)
         self._split_entry.pack(side="left", padx=(6, 0))
         self._register_mutable(self._split_entry)
+        self._verify_disabled_widgets.append((self._split_entry, "normal"))
         tk.Label(split_row, text="GB", fg=theme.FG2, bg=theme.BG2, font=FONT_MAIN).pack(side="left", padx=4)
         self._help_btn(split_row, "Split Archive Policy", "Automatically segments large evidence collections into fixed-size volumes (e.g., 4GB for FAT32 compatibility or DVD storage).")
 
@@ -687,22 +912,25 @@ class ForensicPackApp(tk.Tk):
         row3.pack(fill="x", pady=3)
         tk.Label(row3, text="Concurrent Jobs:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._threads_var = tk.IntVar(value=int(self._settings.get("threads", 4)))
-        threads_spin = tk.Spinbox(row3, from_=1, to=16, textvariable=self._threads_var, bg=theme.BG3, fg=theme.WHITE, width=5, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
-        threads_spin.pack(side="left")
-        self._register_mutable(threads_spin)
+        self._threads_spin = tk.Spinbox(row3, from_=1, to=16, textvariable=self._threads_var, bg=theme.BG3, fg=theme.WHITE, width=5, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
+        self._threads_spin.pack(side="left")
+        self._register_mutable(self._threads_spin)
+        self._verify_disabled_widgets.append((self._threads_spin, "normal"))
         self._auto_threads_var = tk.BooleanVar(value=bool(self._settings.get("auto_threads", False)))
-        auto_threads_cb = tk.Checkbutton(row3, text="Auto", variable=self._auto_threads_var, bg=theme.BG2, fg=theme.FG2, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=("Segoe UI", 9), cursor="hand2")
-        auto_threads_cb.pack(side="left", padx=(8, 0))
-        self._register_mutable(auto_threads_cb)
+        self._auto_threads_cb = tk.Checkbutton(row3, text="Auto", variable=self._auto_threads_var, bg=theme.BG2, fg=theme.FG2, activebackground=theme.BG2, activeforeground=theme.WHITE, selectcolor=theme.BG3, font=("Segoe UI", 9), cursor="hand2")
+        self._auto_threads_cb.pack(side="left", padx=(8, 0))
+        self._register_mutable(self._auto_threads_cb)
+        self._verify_disabled_widgets.append((self._auto_threads_cb, "normal"))
         self._help_btn(row3, "Concurrency Policy", "'Fixed' processes specified cases simultaneously. 'Auto' intelligently throttles based on file sizes to prevent I/O bottlenecks and disk thrashing.")
 
         hash_threads_row = tk.Frame(inner, bg=theme.BG2)
         hash_threads_row.pack(fill="x", pady=3)
         tk.Label(hash_threads_row, text="Hash Threads:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._hash_threads_var = tk.IntVar(value=int(self._settings.get("hash_threads", 4)))
-        hash_threads_spin = tk.Spinbox(hash_threads_row, from_=1, to=32, textvariable=self._hash_threads_var, bg=theme.BG3, fg=theme.WHITE, width=5, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
-        hash_threads_spin.pack(side="left")
-        self._register_mutable(hash_threads_spin)
+        self._hash_threads_spin = tk.Spinbox(hash_threads_row, from_=1, to=32, textvariable=self._hash_threads_var, bg=theme.BG3, fg=theme.WHITE, width=5, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
+        self._hash_threads_spin.pack(side="left")
+        self._register_mutable(self._hash_threads_spin)
+        self._verify_disabled_widgets.append((self._hash_threads_spin, "normal"))
         tk.Label(hash_threads_row, text="threads used for parallel file hashing inside each job", fg=theme.FG2, bg=theme.BG2, font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
         self._help_btn(hash_threads_row, "Hashing Parallelism", "Controls internal parallelism of the manifest engine. Allows the tool to read and hash multiple files in parallel before writing the manifest.")
 
@@ -710,13 +938,15 @@ class ForensicPackApp(tk.Tk):
         pw_row.pack(fill="x", pady=3)
         tk.Label(pw_row, text="Password (7z only):", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._pw_var = tk.StringVar()
-        pw_entry = tk.Entry(pw_row, textvariable=self._pw_var, show="*", bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT)
-        pw_entry.pack(side="left", fill="x", expand=True)
-        self._register_mutable(pw_entry)
+        self._pw_entry = tk.Entry(pw_row, textvariable=self._pw_var, show="*", bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT)
+        self._pw_entry.pack(side="left", fill="x", expand=True)
+        self._register_mutable(self._pw_entry)
+        self._verify_disabled_widgets.append((self._pw_entry, "normal"))
         self._show_pw = tk.BooleanVar(value=False)
-        show_pw_cb = tk.Checkbutton(pw_row, text="Show", variable=self._show_pw, command=lambda: pw_entry.config(show="" if self._show_pw.get() else "*"), bg=theme.BG2, fg=theme.FG2, activebackground=theme.BG2, selectcolor=theme.BG3, font=("Segoe UI", 9), cursor="hand2")
-        show_pw_cb.pack(side="left", padx=6)
-        self._register_mutable(show_pw_cb)
+        self._show_pw_cb = tk.Checkbutton(pw_row, text="Show", variable=self._show_pw, command=lambda: self._pw_entry.config(show="" if self._show_pw.get() else "*"), bg=theme.BG2, fg=theme.FG2, activebackground=theme.BG2, selectcolor=theme.BG3, font=("Segoe UI", 9), cursor="hand2")
+        self._show_pw_cb.pack(side="left", padx=6)
+        self._register_mutable(self._show_pw_cb)
+        self._verify_disabled_widgets.append((self._show_pw_cb, "normal"))
 
         flags_row = tk.Frame(inner, bg=theme.BG2)
         flags_row.pack(fill="x", pady=(6, 3))
@@ -739,6 +969,8 @@ class ForensicPackApp(tk.Tk):
             if text == "Skip Archive Hash":
                 self._skip_archive_hash_cb = cb
             self._register_mutable(cb)
+            if text in {"Resume", "Dry Run", "Fast Scan", "Embed Manifest"}:
+                self._verify_disabled_widgets.append((cb, "normal"))
             
             # Map help text for flags
             help_data = {
@@ -757,18 +989,19 @@ class ForensicPackApp(tk.Tk):
         adv_row.pack(fill="x", pady=3)
         tk.Label(adv_row, text="Progress Interval (ms):", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._progress_interval_var = tk.IntVar(value=int(self._settings.get("progress_interval_ms", 200)))
-        interval_spin = tk.Spinbox(adv_row, from_=0, to=5000, textvariable=self._progress_interval_var, bg=theme.BG3, fg=theme.WHITE, width=7, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
-        interval_spin.pack(side="left")
-        self._register_mutable(interval_spin)
+        self._progress_interval_spin = tk.Spinbox(adv_row, from_=0, to=5000, textvariable=self._progress_interval_var, bg=theme.BG3, fg=theme.WHITE, width=7, relief="flat", font=FONT_MAIN, buttonbackground=theme.BG3)
+        self._progress_interval_spin.pack(side="left")
+        self._register_mutable(self._progress_interval_spin)
         self._help_btn(adv_row, "Progress Interval", "Throttles progress event updates to reduce UI overhead. Lower values update more frequently, higher values reduce noise.")
 
         db_row = tk.Frame(inner, bg=theme.BG2)
         db_row.pack(fill="x", pady=3)
         tk.Label(db_row, text="State DB (optional):", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
         self._state_db_var = tk.StringVar(value=str(self._settings.get("state_db_path", "")))
-        state_db_entry = tk.Entry(db_row, textvariable=self._state_db_var, bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT)
-        state_db_entry.pack(side="left", fill="x", expand=True)
-        self._register_mutable(state_db_entry)
+        self._state_db_entry = tk.Entry(db_row, textvariable=self._state_db_var, bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", font=FONT_MAIN, highlightthickness=1, highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT)
+        self._state_db_entry.pack(side="left", fill="x", expand=True)
+        self._register_mutable(self._state_db_entry)
+        self._verify_disabled_widgets.append((self._state_db_entry, "normal"))
         self._clear_state_db_btn(db_row)
         self._browse_state_db_btn(db_row)
         self._help_btn(db_row, "State Database Path", "Choose where the SQLite resume database is stored. Leave default to place it in the output folder.")
@@ -1055,10 +1288,16 @@ class ForensicPackApp(tk.Tk):
         ctrl.pack(fill="x", pady=6)
         quick = tk.Frame(ctrl, bg=parent.cget("bg"))
         quick.pack(side="left")
+        self._open_report_btn = tk.Button(quick, text="Open Last Report", command=self._open_last_report, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
+        self._open_report_btn.pack(side="left", padx=(0, 8))
         self._copy_report_btn = tk.Button(quick, text="Copy Last Report Path", command=self._copy_last_report_path, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
         self._copy_report_btn.pack(side="left", padx=(0, 8))
         self._open_output_btn = tk.Button(quick, text="Open Output Folder", command=self._open_output_folder, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
         self._open_output_btn.pack(side="left", padx=(0, 8))
+        self._summary_btn = tk.Button(quick, text="Show Last Summary", command=self._show_last_completion_summary, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
+        self._summary_btn.pack(side="left", padx=(0, 8))
+        self._diag_snapshot_btn = tk.Button(quick, text="Copy Diagnostic Snapshot", command=self._copy_diagnostic_snapshot, bg=theme.BG3, fg=theme.YELLOW, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.WHITE, cursor="hand2", padx=10, pady=8)
+        self._diag_snapshot_btn.pack(side="left", padx=(0, 8))
         self._verbose_btn = tk.Button(quick, text="Verbose Console", command=self._open_verbose, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
         self._verbose_btn.pack(side="left", padx=(0, 8))
         self._diag_btn = tk.Button(quick, text="Run Diagnostics", command=self._run_diagnostics, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
@@ -1117,14 +1356,9 @@ class ForensicPackApp(tk.Tk):
         self.clipboard_append(self._last_report_path)
         self._status_var.set("Last report path copied.")
 
-    def _open_output_folder(self):
-        target = self._dst_var.get().strip() or self._last_output_dir
-        if not target:
-            messagebox.showinfo("No Output Folder", "No output folder is available yet.")
-            return
-        path = Path(target)
+    def _open_path_in_shell(self, path: Path, missing_title: str) -> None:
         if not path.exists():
-            messagebox.showerror("Folder Missing", f"Output folder not found:\n{path}")
+            messagebox.showerror(missing_title, f"Path not found:\n{path}")
             return
         try:
             if os.name == "nt":
@@ -1134,19 +1368,222 @@ class ForensicPackApp(tk.Tk):
             else:
                 subprocess.run(["xdg-open", str(path)], check=False)
         except Exception as exc:
-            messagebox.showerror("Open Failed", f"Could not open folder:\n{exc}")
+            messagebox.showerror("Open Failed", f"Could not open path:\n{exc}")
+
+    def _open_last_report(self):
+        if not self._last_report_path:
+            messagebox.showinfo("No Report", "No report has been generated yet.")
+            return
+        self._open_path_in_shell(Path(self._last_report_path), "Report Missing")
+
+    def _open_output_folder(self):
+        target = self._dst_var.get().strip() or self._last_output_dir
+        if not target:
+            messagebox.showinfo("No Output Folder", "No output folder is available yet.")
+            return
+        self._open_path_in_shell(Path(target), "Folder Missing")
+
+    def _build_diagnostic_snapshot(self) -> str:
+        lines = [
+            f"{APP_NAME} v{APP_VERSION}",
+            f"Mode: {self._current_run_mode()}",
+            f"Source/Input: {self._src_var.get().strip()}",
+            f"Output/Reports: {self._dst_var.get().strip()}",
+            f"Last Report: {self._last_report_path or '(none)'}",
+            f"Current Phase: {self._current_phase}",
+            f"Status: {self._status_var.get()}",
+        ]
+        if self._last_completion_summary:
+            lines.extend(["", "Completion Summary", self._last_completion_summary])
+        if self._last_issue_lines:
+            lines.extend(["", "Warnings / Issues", *self._last_issue_lines])
+        return "\n".join(lines)
+
+    def _copy_diagnostic_snapshot(self) -> None:
+        snapshot = self._build_diagnostic_snapshot()
+        self.clipboard_clear()
+        self.clipboard_append(snapshot)
+        self._status_var.set("Diagnostic snapshot copied.")
+
+    def _show_last_completion_summary(self) -> None:
+        if not self._last_completion_summary:
+            messagebox.showinfo("No Summary", "No completion summary is available yet.")
+            return
+        self._show_completion_summary_dialog()
+
+    def _write_probe_status(self, path: Path) -> str:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".forensicpack_write_probe.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return "OK"
+        except Exception as exc:
+            return f"FAIL ({exc})"
+
+    def _discover_verify_targets_preview(self, input_path: Path) -> list[Path]:
+        if input_path.is_file():
+            return [input_path] if input_path.suffix.lower() in {".zip", ".7z", ".gz", ".bz2", ".001"} else []
+        supported: list[Path] = []
+        for path in sorted(input_path.rglob("*")):
+            if not path.is_file():
+                continue
+            name = path.name.lower()
+            if name.endswith((".zip", ".tar.gz", ".tar.bz2", ".7z", ".7z.001")):
+                supported.append(path)
+        return supported
+
+    def _selected_source_items_for_preview(self, source_dir: Path) -> list[Path]:
+        if self._selected_item_names is None:
+            return sorted(source_dir.iterdir(), key=lambda item: item.name.lower())
+        selected_lookup = {name.lower() for name in self._selected_item_names}
+        return [item for item in sorted(source_dir.iterdir(), key=lambda current: current.name.lower()) if item.name.lower() in selected_lookup]
+
+    def _build_preflight_report(self, config: JobConfig) -> tuple[str, list[str], bool]:
+        mode = self._current_run_mode()
+        lines = [
+            "Preflight Check",
+            "-" * 40,
+            f"Mode            : {mode}",
+            f"Source/Input    : {config.source_dir.resolve(strict=False)}",
+            f"Output/Reports  : {config.output_dir.resolve(strict=False)}",
+        ]
+        issues: list[str] = []
+        hard_block = False
+        output_status = self._write_probe_status(config.output_dir)
+        lines.append(f"Output Write     : {output_status}")
+        if not output_status.startswith("OK"):
+            issues.append("Output folder is not writable.")
+            hard_block = True
+
+        if mode == "verify":
+            verify_input = config.source_dir
+            if not verify_input.exists():
+                lines.append("Verify Targets   : missing input path")
+                issues.append("Verify input path was not found.")
+                hard_block = True
+            else:
+                targets = self._discover_verify_targets_preview(verify_input)
+                lines.append(f"Verify Targets   : {len(targets)} supported archive(s)")
+                if not targets:
+                    issues.append("No supported archive files were found under the selected verify input.")
+                    hard_block = True
+                if verify_input.is_file():
+                    lines.append(f"Input Type       : single archive file ({verify_input.name})")
+                else:
+                    lines.append("Input Type       : folder scan (recursive)")
+            if config.report_json:
+                lines.append("Reports          : TXT / CSV / JSON")
+            else:
+                lines.append("Reports          : TXT / CSV")
+            return "\n".join(lines), issues, hard_block
+
+        source_dir = config.source_dir
+        if not source_dir.is_dir():
+            lines.append("Selected Items   : source folder missing")
+            issues.append("Source folder was not found.")
+            hard_block = True
+        else:
+            items = self._selected_source_items_for_preview(source_dir)
+            lines.append(f"Selected Items   : {len(items)} direct child item(s)")
+            if not items:
+                issues.append("No source items are available for processing.")
+                hard_block = True
+            directories = sum(1 for item in items if item.is_dir())
+            files = len(items) - directories
+            lines.append(f"Preview          : {directories} folder(s), {files} file(s)")
+            if config.delete_source:
+                locked_candidates = [item.name for item in items if not os.access(item, os.W_OK)]
+                if locked_candidates:
+                    issues.append(f"Delete-source may fail for {len(locked_candidates)} item(s) due to current write permissions.")
+        if config.archive_fmt == "7z":
+            lines.append(f"7-Zip Path       : {find_7zip() or 'NOT FOUND'}")
+            if not find_7zip():
+                issues.append("7-Zip is required for 7z archive creation and verification.")
+                hard_block = True
+        if config.resume_enabled:
+            state_db = config.state_db_path or (config.output_dir / "forensicpack_state.db")
+            lines.append(f"Resume DB        : {state_db} ({'existing' if state_db.exists() else 'new'})")
+        if not config.hash_algorithms:
+            issues.append("No hash algorithms selected. File and archive hashing will be skipped.")
+        if config.delete_source:
+            issues.append("Delete-source is enabled. Originals are only removed after archive verification passes.")
+        return "\n".join(lines), issues, hard_block
+
+    def _confirm_preflight(self, config: JobConfig) -> bool:
+        report, issues, hard_block = self._build_preflight_report(config)
+        dialog = tk.Toplevel(self)
+        dialog.title("Preflight Review")
+        dialog.configure(bg=theme.BG2)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("760x560")
+        dialog.minsize(680, 460)
+
+        tk.Label(dialog, text="Review the session summary and preflight findings before continuing.", fg=theme.WHITE, bg=theme.BG2, font=FONT_HEAD).pack(anchor="w", padx=14, pady=(12, 8))
+        text = tk.Text(dialog, bg=theme.BG, fg=theme.FG, font=FONT_MONO, wrap="word", relief="flat", highlightthickness=1, highlightbackground=theme.BORDER, height=18)
+        text.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        text.insert("end", build_run_summary(config) + "\n\n" + report)
+        if issues:
+            text.insert("end", "\n\nFindings\n" + "-" * 40 + "\n- " + "\n- ".join(issues))
+        text.configure(state="disabled")
+
+        confirm_var = tk.StringVar()
+        if requires_destructive_confirmation(config):
+            confirm_row = tk.Frame(dialog, bg=theme.BG2)
+            confirm_row.pack(fill="x", padx=14, pady=(0, 8))
+            tk.Label(confirm_row, text="DELETE confirmation:", fg=theme.YELLOW, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
+            tk.Entry(confirm_row, textvariable=confirm_var, bg=theme.BG3, fg=theme.WHITE, insertbackground=theme.WHITE, relief="flat", width=24).pack(side="left", padx=(8, 0))
+        result = {"approved": False}
+
+        def _start():
+            if hard_block:
+                messagebox.showerror("Preflight Failed", "Resolve the blocking preflight findings before continuing.")
+                return
+            if requires_destructive_confirmation(config) and not validate_destructive_confirmation(confirm_var.get()):
+                messagebox.showwarning("Confirmation Required", "Run cancelled. DELETE confirmation did not match.")
+                return
+            result["approved"] = True
+            dialog.destroy()
+
+        actions = tk.Frame(dialog, bg=theme.BG2)
+        actions.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Button(actions, text="Cancel", command=dialog.destroy, bg=theme.BG3, fg=theme.FG, relief="flat", cursor="hand2", padx=12).pack(side="right")
+        tk.Button(actions, text="Start" if not hard_block else "Blocked", command=_start, bg=theme.ACCENT if not hard_block else theme.BG3, fg=theme.BG if not hard_block else theme.FG2, relief="flat", cursor="hand2", padx=16).pack(side="right", padx=(0, 8))
+
+        self.wait_window(dialog)
+        return bool(result["approved"])
+
+    def _show_completion_summary_dialog(self) -> None:
+        if self._completion_win is not None and self._completion_win.winfo_exists():
+            self._completion_win.lift()
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Session Summary")
+        dialog.configure(bg=theme.BG2)
+        dialog.transient(self)
+        dialog.geometry("760x520")
+        dialog.minsize(640, 420)
+        self._completion_win = dialog
+
+        tk.Label(dialog, text="Session complete", fg=theme.WHITE, bg=theme.BG2, font=FONT_HEAD).pack(anchor="w", padx=14, pady=(12, 8))
+        if self._last_completion_summary:
+            tk.Label(dialog, text=self._last_completion_summary, fg=theme.FG, bg=theme.BG2, font=FONT_MAIN, justify="left", wraplength=720).pack(anchor="w", padx=14, pady=(0, 8))
+        text = tk.Text(dialog, bg=theme.BG, fg=theme.FG, font=FONT_MONO, wrap="word", relief="flat", highlightthickness=1, highlightbackground=theme.BORDER, height=16)
+        text.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        if self._last_issue_lines:
+            text.insert("end", "Warnings / Issues\n" + "-" * 40 + "\n- " + "\n- ".join(self._last_issue_lines))
+        else:
+            text.insert("end", "No warnings or failure details were captured in the last run.")
+        text.configure(state="disabled")
+        actions = tk.Frame(dialog, bg=theme.BG2)
+        actions.pack(fill="x", padx=14, pady=(0, 12))
+        tk.Button(actions, text="Open Output", command=self._open_output_folder, bg=theme.BG3, fg=theme.ACCENT, relief="flat", cursor="hand2", padx=12).pack(side="left")
+        tk.Button(actions, text="Open Report", command=self._open_last_report, bg=theme.BG3, fg=theme.ACCENT, relief="flat", cursor="hand2", padx=12).pack(side="left", padx=(8, 0))
+        tk.Button(actions, text="Copy Snapshot", command=self._copy_diagnostic_snapshot, bg=theme.BG3, fg=theme.YELLOW, relief="flat", cursor="hand2", padx=12).pack(side="left", padx=(8, 0))
+        tk.Button(actions, text="Close", command=dialog.destroy, bg=theme.ACCENT, fg=theme.BG, relief="flat", cursor="hand2", padx=14).pack(side="right")
 
     def _run_diagnostics(self):
-        def _write_probe(path: Path) -> str:
-            try:
-                path.mkdir(parents=True, exist_ok=True)
-                probe = path / ".forensicpack_write_probe.tmp"
-                probe.write_text("ok", encoding="utf-8")
-                probe.unlink(missing_ok=True)
-                return "OK"
-            except Exception as exc:
-                return f"FAIL ({exc})"
-
         source_text = self._src_var.get().strip()
         output_text = self._dst_var.get().strip()
         source_path = Path(source_text) if source_text else None
@@ -1155,8 +1592,11 @@ class ForensicPackApp(tk.Tk):
         seven_zip = find_7zip() or "NOT FOUND"
         source_check = "N/A"
         if source_path is not None:
-            source_check = "OK" if source_path.exists() and source_path.is_dir() else "FAIL (missing or not a directory)"
-        output_check = "N/A" if output_path is None else _write_probe(output_path)
+            if self._current_run_mode() == "verify":
+                source_check = "OK" if source_path.exists() else "FAIL (missing input)"
+            else:
+                source_check = "OK" if source_path.exists() and source_path.is_dir() else "FAIL (missing or not a directory)"
+        output_check = "N/A" if output_path is None else self._write_probe_status(output_path)
         lines = [
             "ForensicPack Diagnostics",
             "-" * 30,
@@ -1360,9 +1800,10 @@ class ForensicPackApp(tk.Tk):
         status_lbl = row["status_lbl"]
         phase_lbl = row["phase_lbl"]
         pb = row["progress"]
-        phase_lbl.config(text=phase, fg=theme.FG2 if phase not in {"done", "failed"} else theme.GREEN)
+        friendly_phase = friendly_phase_label(phase, self._current_run_mode())
+        phase_lbl.config(text=friendly_phase, fg=theme.FG2 if phase not in {"done", "failed"} else theme.GREEN)
         pb.config(mode="determinate", value=fraction * 100)
-        self._current_phase = phase
+        self._current_phase = friendly_phase
         if fraction > 0 and status_lbl.cget("text") == "Queued":
             status_lbl.config(text="RUNNING", fg=theme.ACCENT)
             row["state"] = "running"
@@ -1438,9 +1879,13 @@ class ForensicPackApp(tk.Tk):
 
     def _collect_settings_payload(self) -> dict[str, object]:
         hashes = self._selected_hash_algorithms()
+        recent_sources = push_recent_value(self._settings.get("recent_sources", []), self._src_var.get().strip())
+        recent_outputs = push_recent_value(self._settings.get("recent_outputs", []), self._dst_var.get().strip())
         return {
             "source_dir": self._src_var.get().strip(),
             "output_dir": self._dst_var.get().strip(),
+            "run_mode": self._current_run_mode(),
+            "selected_preset": self._preset_var.get() if hasattr(self, "_preset_var") else "Custom",
             "archive_fmt": self._fmt_var.get(),
             "compress_level_label": self._level_var.get(),
             "hash_algorithms": hashes,
@@ -1465,10 +1910,15 @@ class ForensicPackApp(tk.Tk):
             "metadata_case_id": self._meta_vars["Case ID"].get(),
             "metadata_evidence_id": self._meta_vars["Evidence ID"].get(),
             "metadata_notes": self._meta_vars["Notes"].get(),
+            "recent_sources": recent_sources,
+            "recent_outputs": recent_outputs,
         }
 
     def _save_current_settings(self):
-        save_gui_settings(self._collect_settings_payload())
+        self._settings = _settings = self._collect_settings_payload()
+        save_gui_settings(_settings)
+        self._refresh_recent_path_menu("source")
+        self._refresh_recent_path_menu("output")
 
     def _update_last_report_path(self):
         output_text = self._dst_var.get().strip()
@@ -1482,28 +1932,48 @@ class ForensicPackApp(tk.Tk):
             self._last_report_path = str(candidates[-1])
             self._last_output_dir = str(output_path)
 
+    def _update_completion_summary_state(self) -> None:
+        counts = summarize_completion([str(row["state"]) for row in self._queue_rows])
+        self._last_completion_summary = (
+            f"{counts['total']} item(s) processed: "
+            f"{counts['success']} success, "
+            f"{counts['warning']} warning, "
+            f"{counts['failed']} failed, "
+            f"{counts['skipped']} skipped, "
+            f"{counts['cancelled']} cancelled."
+        )
+        issue_lines: list[str] = []
+        for row in self._queue_rows:
+            state = str(row.get("state", ""))
+            reason = str(row.get("failure_reason", "")).strip()
+            if state in {"warning", "error", "skipped", "cancelled"} and reason:
+                issue_lines.append(f"{row.get('name', 'Item')}: {reason}")
+        self._last_issue_lines = issue_lines
+
     def _start(self):
         if not self._src_var.get().strip() or not self._dst_var.get().strip():
-            messagebox.showerror("Missing Paths", "Please select both Source and Output folders.")
+            messagebox.showerror("Missing Paths", "Please select both input and output/report folders.")
             return
         source_dir = Path(self._src_var.get().strip())
-        if not source_dir.is_dir():
+        mode = self._current_run_mode()
+        if mode == "pack" and not source_dir.is_dir():
             messagebox.showerror("Invalid Source", f"Source folder not found:\n{source_dir}")
+            return
+        if mode == "verify" and not source_dir.exists():
+            messagebox.showerror("Invalid Input", f"Verify input not found:\n{source_dir}")
             return
         algorithms = self._selected_hash_algorithms()
 
         case_metadata = None
-        if self._use_metadata_var.get():
+        if mode == "pack" and self._use_metadata_var.get():
             case_metadata = {key: value.get() for key, value in self._meta_vars.items()}
 
-        selected_item_names = self._resolved_selected_items(source_dir)
+        selected_item_names = self._resolved_selected_items(source_dir) if mode == "pack" else None
         if selected_item_names is not None and not selected_item_names:
             messagebox.showerror("No Items Selected", "No selected items are currently available in source.")
             return
         config = self._build_config(algorithms, case_metadata, selected_item_names)
-        if not self._confirm_session_summary(config):
-            return
-        if not self._confirm_destructive_action(config):
+        if not self._confirm_preflight(config):
             return
         self._save_current_settings()
 
@@ -1516,11 +1986,25 @@ class ForensicPackApp(tk.Tk):
         self._cancel_btn.config(state="normal", bg=theme.RED, fg=theme.WHITE)
         self._prog_overall.config(value=0)
         self._last_elapsed_seconds = 0.0
+        self._last_completion_summary = ""
+        self._last_issue_lines = []
         self._status_var.set("Running")
+        if self._completion_win is not None and self._completion_win.winfo_exists():
+            self._completion_win.destroy()
+            self._completion_win = None
 
         def _worker():
             try:
-                run_session(config, self._callbacks(), self._token)
+                if mode == "verify":
+                    run_verify_session(
+                        verify_input=config.source_dir,
+                        output_dir=config.output_dir,
+                        callbacks=self._callbacks(),
+                        hash_algorithms=algorithms,
+                        report_json=config.report_json,
+                    )
+                else:
+                    run_session(config, self._callbacks(), self._token)
             except Exception as exc:
                 if is_permission_error(exc):
                     self._ui_queue.put(("permission_error", str(exc)))
@@ -1544,8 +2028,11 @@ class ForensicPackApp(tk.Tk):
         self._on_format_changed()
         self._refresh_archive_hash_option_state()
         self._on_metadata_toggle()
+        self._apply_mode_state()
+        self._update_completion_summary_state()
         self._status_var.set("Ready")
         self._notify_completion()
+        self._show_completion_summary_dialog()
 
     def _notify_completion(self):
         """Sends a Windows toast notification on completion."""

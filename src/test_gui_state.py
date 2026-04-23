@@ -3,16 +3,21 @@ import json
 from engine import JobConfig
 from gui_state import (
     GUI_SETTINGS_DEFAULTS,
+    available_preset_names,
+    apply_gui_preset,
     GUI_SETTINGS_SCHEMA_VERSION,
     WidgetStateBinding,
     apply_widget_bindings,
     build_run_summary,
     estimate_eta_seconds,
+    friendly_phase_label,
     load_gui_settings,
     matches_queue_filter,
+    push_recent_value,
     queue_filter_counts,
     requires_destructive_confirmation,
     save_gui_settings,
+    summarize_completion,
     validate_destructive_confirmation,
 )
 
@@ -119,6 +124,32 @@ def test_build_run_summary_marks_archive_hash_na_when_hashes_disabled(tmp_path):
     summary = build_run_summary(config)
     assert "Hashes          : None (disabled)" in summary
     assert "Archive Hash    : N/A (no hashes selected)" in summary
+
+
+def test_apply_gui_preset_updates_expected_fields():
+    updated = apply_gui_preset(dict(GUI_SETTINGS_DEFAULTS), "Verify Existing Archives")
+    assert updated["run_mode"] == "verify"
+    assert updated["report_json"] is True
+    assert updated["selected_preset"] == "Verify Existing Archives"
+    assert "Custom" in available_preset_names()
+
+
+def test_push_recent_value_dedupes_and_limits():
+    values = push_recent_value(["C:/b", "C:/a", "C:/c"], "C:/A", limit=3)
+    assert values == ["C:/A", "C:/b", "C:/c"]
+
+
+def test_friendly_phase_and_completion_summary_helpers():
+    assert friendly_phase_label("hash_archive") == "Hashing final archive"
+    summary = summarize_completion(["done", "warning", "error", "skipped", "cancelled"])
+    assert summary == {
+        "total": 5,
+        "success": 1,
+        "warning": 1,
+        "failed": 1,
+        "skipped": 1,
+        "cancelled": 1,
+    }
 
 
 class _DummyWidget:

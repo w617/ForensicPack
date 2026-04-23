@@ -537,6 +537,8 @@ def run_verify_session(
     
     def _verify_item(idx: int, path: Path, fmt: str) -> JobResult:
         start = _now_iso()
+        if callbacks.item_status_cb:
+            callbacks.item_status_cb(idx, "running")
         callbacks.emit_progress(ProgressEvent(idx, "verify", 0, 1, f"Verifying {path.name}"))
         passed = verify_archive(path, fmt, callbacks, job_id=idx, token=token)
         
@@ -558,10 +560,14 @@ def run_verify_session(
             callbacks.emit_progress(ProgressEvent(idx, "verify", 1, 1, f"Verified {path.name}"))
         else:
             result.warnings.append("Verification failed.")
-        
+            if callbacks.item_failure_cb:
+                callbacks.item_failure_cb(idx, "Verification failed.")
+
         result.elapsed_seconds = (
             dt.datetime.fromisoformat(result.end_time) - dt.datetime.fromisoformat(result.start_time)
         ).total_seconds()
+        if callbacks.item_status_cb:
+            callbacks.item_status_cb(idx, "done" if result.status == "success" else "error")
         return result
 
     ordered_results: dict[int, JobResult] = {}

@@ -310,6 +310,33 @@ def test_run_verify_session_handles_duplicate_archive_names(tmp_path: Path):
     assert all(result.verify == "PASS" for result in results)
 
 
+def test_run_verify_session_emits_item_status_callbacks(tmp_path: Path):
+    verify_root = tmp_path / "verify"
+    verify_root.mkdir()
+    import zipfile
+
+    archive = verify_root / "case.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("one.txt", "one")
+
+    statuses: list[tuple[int, str]] = []
+    callbacks = JobCallbacks(
+        log_cb=lambda _msg, _colour=None: None,
+        progress_overall_cb=lambda _fraction: None,
+        progress_case_cb=lambda _fraction: None,
+        status_cb=lambda _text: None,
+        item_status_cb=lambda idx, state: statuses.append((idx, state)),
+    )
+    run_verify_session(
+        verify_input=archive,
+        output_dir=tmp_path / "output",
+        callbacks=callbacks,
+        hash_algorithms=["SHA256"],
+        report_json=False,
+    )
+    assert statuses == [(0, "running"), (0, "done")]
+
+
 def _result_with_status(status: str) -> JobResult:
     return JobResult(
         case_name="case",
