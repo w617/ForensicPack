@@ -962,3 +962,173 @@ def test_is_permission_error_detection():
     assert gui_state.is_permission_error(PermissionError("access denied")) is True
     assert gui_state.is_permission_error(OSError(13, "Permission denied")) is True
     assert gui_state.is_permission_error(RuntimeError("other failure")) is False
+
+
+# ---------------------------------------------------------------------------
+# Symlink edge-case tests
+# ---------------------------------------------------------------------------
+
+def test_symlink_to_file_included_as_regular_file(sample_source: Path, tmp_path: Path):
+    """A symlink to a file inside a case dir should be inventoried without following the link."""
+    case_dir = sample_source / "case_sym"
+    case_dir.mkdir()
+    real_file = case_dir / "real.txt"
+    real_file.write_text("evidence data", encoding="utf-8")
+    link = case_dir / "link_to_real"
+    try:
+        link.symlink_to(real_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this platform")
+
+    output = tmp_path / "out"
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=output,
+        archive_fmt="ZIP",
+        compress_level_label="Normal (5)",
+        split_enabled=False,
+        split_size_str="",
+        hash_algorithms=["SHA256"],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+        threads=1,
+        selected_item_names=["case_sym"],
+    )
+    results = run_session(config, _callbacks(), CancellationToken())
+    assert len(results) == 1
+    assert results[0].verify == "PASS"
+
+
+def test_broken_symlink_does_not_crash_session(sample_source: Path, tmp_path: Path):
+    """A broken symlink inside a case dir should be skipped without crashing."""
+    case_dir = sample_source / "case_broken_sym"
+    case_dir.mkdir()
+    (case_dir / "real.txt").write_text("content", encoding="utf-8")
+    link = case_dir / "dangling_link"
+    try:
+        link.symlink_to(case_dir / "nonexistent_target.bin")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this platform")
+
+    output = tmp_path / "out"
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=output,
+        archive_fmt="ZIP",
+        compress_level_label="Normal (5)",
+        split_enabled=False,
+        split_size_str="",
+        hash_algorithms=["SHA256"],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+        threads=1,
+        selected_item_names=["case_broken_sym"],
+    )
+    results = run_session(config, _callbacks(), CancellationToken())
+    assert len(results) == 1
+    assert results[0].status in {"success", "failed"}
+
+
+def test_circular_symlink_does_not_hang(sample_source: Path, tmp_path: Path):
+    """A circular directory symlink should not cause infinite recursion."""
+    case_dir = sample_source / "case_circular"
+    case_dir.mkdir()
+    subdir = case_dir / "subdir"
+    subdir.mkdir()
+    (case_dir / "file.txt").write_text("data", encoding="utf-8")
+    try:
+        (subdir / "loop").symlink_to(case_dir)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this platform")
+
+    output = tmp_path / "out"
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=output,
+        archive_fmt="ZIP",
+        compress_level_label="Normal (5)",
+        split_enabled=False,
+        split_size_str="",
+        hash_algorithms=["SHA256"],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+        threads=1,
+        selected_item_names=["case_circular"],
+    )
+    results = run_session(config, _callbacks(), CancellationToken())
+    assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Low-disk-space / archive creation failure test
+# ---------------------------------------------------------------------------
+
+def test_archive_creation_failure_marks_item_failed(sample_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An OSError during archive creation should mark the item failed, not crash the session."""
+    import archivers
+
+    def _mock_create(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(archivers, "create_archive", _mock_create)
+
+    output = tmp_path / "out"
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=output,
+        archive_fmt="ZIP",
+        compress_level_label="Normal (5)",
+        split_enabled=False,
+        split_size_str="",
+        hash_algorithms=["SHA256"],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+        threads=1,
+    )
+    results = run_session(config, _callbacks(), CancellationToken())
+    assert all(result.status == "failed" for result in results)
+    assert all(any("No space left on device" in w for w in result.warnings) for result in results)
+
+
+# ---------------------------------------------------------------------------
+# validate_config split-size tests
+# ---------------------------------------------------------------------------
+
+def test_validate_config_rejects_invalid_split_size(sample_source: Path, tmp_path: Path):
+    from core import validate_config
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=tmp_path / "out",
+        archive_fmt="7z",
+        compress_level_label="Normal (5)",
+        split_enabled=True,
+        split_size_str="not_a_number",
+        hash_algorithms=[],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+    )
+    with pytest.raises(ValueError, match="Invalid split size"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_out_of_range_split_size(sample_source: Path, tmp_path: Path):
+    from core import validate_config
+    config = JobConfig(
+        source_dir=sample_source,
+        output_dir=tmp_path / "out",
+        archive_fmt="7z",
+        compress_level_label="Normal (5)",
+        split_enabled=True,
+        split_size_str="0.001",
+        hash_algorithms=[],
+        password=None,
+        delete_source=False,
+        skip_existing=False,
+    )
+    with pytest.raises(ValueError, match="out of range"):
+        validate_config(config)
