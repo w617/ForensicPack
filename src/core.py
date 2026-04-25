@@ -303,7 +303,7 @@ def _process_single_item(
                 warning_text=" | ".join(result.warnings),
             )
         return result
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, EOFError) as exc:
         runtime.kill_process(job_id)
         cleanup_partial_outputs(temp_archive)
         terminal_state = "error"
@@ -323,6 +323,10 @@ def _process_single_item(
                 error_text=str(exc),
             )
         return result
+    except MemoryError:
+        runtime.kill_process(job_id)
+        cleanup_partial_outputs(temp_archive)
+        raise
     finally:
         if manifest_path.exists():
             try:
@@ -355,6 +359,13 @@ def validate_config(config: JobConfig) -> None:
         raise ValueError(f"Unsupported thread strategy: {config.thread_strategy}")
     if config.progress_interval_ms < 0:
         raise ValueError("Progress interval must be >= 0.")
+    if config.split_enabled and config.split_size_str:
+        try:
+            split_val = float(config.split_size_str)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid split size: {config.split_size_str!r}. Must be a positive number.")
+        if not (0.1 <= split_val <= 100_000):
+            raise ValueError(f"Split size {split_val} GB is out of range [0.1, 100000].")
     source_resolved = safe_resolve(config.source_dir)
     output_resolved = safe_resolve(config.output_dir)
     if source_resolved == output_resolved:
@@ -495,22 +506,24 @@ def _archive_format_for_path(path: Path) -> str | None:
     return None
 
 def _discover_verify_targets(input_path: Path) -> list[tuple[Path, str]]:
+    import os as _os
     if input_path.is_file():
         fmt = _archive_format_for_path(input_path)
         return [(input_path, fmt)] if fmt else []
     targets: list[tuple[Path, str]] = []
-    for path in sorted(input_path.rglob("*")):
-        if not path.is_file():
-            continue
-        fmt = _archive_format_for_path(path)
-        if not fmt:
-            continue
-        lower = path.name.lower()
-        if lower.endswith(".7z.001") or (fmt != "7z"):
-            targets.append((path, fmt))
-        elif lower.endswith(".7z"):
-            targets.append((path, fmt))
-    return targets
+    for dirpath_str, _dirs, filenames in _os.walk(str(input_path)):
+        dirpath = Path(dirpath_str)
+        for filename in sorted(filenames):
+            path = dirpath / filename
+            fmt = _archive_format_for_path(path)
+            if not fmt:
+                continue
+            lower = filename.lower()
+            if lower.endswith(".7z.001") or (fmt != "7z"):
+                targets.append((path, fmt))
+            elif lower.endswith(".7z"):
+                targets.append((path, fmt))
+    return sorted(targets, key=lambda t: str(t[0]))
 
 def run_verify_session(
     verify_input: Path,

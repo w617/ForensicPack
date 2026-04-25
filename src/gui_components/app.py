@@ -627,7 +627,7 @@ class ForensicPackApp(tk.Tk):
         source_dir = Path(source_text)
         if not source_dir.is_dir():
             raise ValueError(f"Source folder not found: {source_dir}")
-        return sorted(source_dir.iterdir(), key=lambda item: item.name.lower())
+        return sorted(source_dir.iterdir(), key=lambda item: natural_text_key(item.name))
 
     def _open_item_selector(self):
         try:
@@ -803,6 +803,8 @@ class ForensicPackApp(tk.Tk):
                 "Selection Updated",
                 f"Some selected items were not found and will be skipped:\n- " + "\n- ".join(missing[:8]),
             )
+        seen: set[str] = set()
+        resolved = [r for r in resolved if not (r in seen or seen.add(r))]  # type: ignore[func-returns-value]
         self._selected_item_names = resolved if resolved else []
         self._update_selected_items_label()
         return resolved
@@ -1182,6 +1184,7 @@ class ForensicPackApp(tk.Tk):
                     "why_visible": False,
                     "failure_reason": "",
                     "state": "queued",
+                    "start_time": None,
                 }
             )
             self._sync_skip_button_state(self._queue_rows[-1])
@@ -1305,7 +1308,9 @@ class ForensicPackApp(tk.Tk):
         self._uac_btn = tk.Button(quick, text="Relaunch as Admin", command=self._manual_uac_relaunch, bg=theme.BG3, fg=theme.YELLOW, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.WHITE, cursor="hand2", padx=10, pady=8)
         self._uac_btn.pack(side="left", padx=(0, 8))
         self._clear_btn = tk.Button(quick, text="Clear Log", command=self._clear_log, bg=theme.BG3, fg=theme.FG2, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
-        self._clear_btn.pack(side="left")
+        self._clear_btn.pack(side="left", padx=(0, 8))
+        self._save_log_btn = tk.Button(quick, text="Save Log", command=self._save_log, bg=theme.BG3, fg=theme.ACCENT, font=("Segoe UI", 9), relief="flat", activebackground=theme.BORDER, activeforeground=theme.FG, cursor="hand2", padx=10, pady=8)
+        self._save_log_btn.pack(side="left")
         self._help_btn(quick, "Quick Actions", "Copy report path, open output folder, inspect verbose logs, run diagnostics, relaunch as admin, and clear the live log.")
 
         stats = tk.Frame(ctrl, bg=parent.cget("bg"))
@@ -1347,6 +1352,26 @@ class ForensicPackApp(tk.Tk):
         self._log.configure(state="normal")
         self._log.delete("1.0", "end")
         self._log.configure(state="disabled")
+
+    def _save_log(self):
+        content = self._log.get("1.0", "end-1c")
+        if not content.strip():
+            messagebox.showinfo("Log Empty", "There is nothing in the log to save.")
+            return
+        default_name = f"forensicpack_log_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+        path = filedialog.asksaveasfilename(
+            title="Save Session Log",
+            defaultextension=".txt",
+            initialfile=default_name,
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(content, encoding="utf-8")
+            self._status_var.set(f"Log saved to {Path(path).name}")
+        except OSError as exc:
+            messagebox.showerror("Save Failed", f"Could not save log:\n{exc}")
 
     def _copy_last_report_path(self):
         if not self._last_report_path:
@@ -1435,9 +1460,9 @@ class ForensicPackApp(tk.Tk):
 
     def _selected_source_items_for_preview(self, source_dir: Path) -> list[Path]:
         if self._selected_item_names is None:
-            return sorted(source_dir.iterdir(), key=lambda item: item.name.lower())
+            return sorted(source_dir.iterdir(), key=lambda item: natural_text_key(item.name))
         selected_lookup = {name.lower() for name in self._selected_item_names}
-        return [item for item in sorted(source_dir.iterdir(), key=lambda current: current.name.lower()) if item.name.lower() in selected_lookup]
+        return [item for item in sorted(source_dir.iterdir(), key=lambda current: natural_text_key(current.name)) if item.name.lower() in selected_lookup]
 
     def _build_preflight_report(self, config: JobConfig) -> tuple[str, list[str], bool]:
         mode = self._current_run_mode()
@@ -1740,6 +1765,7 @@ class ForensicPackApp(tk.Tk):
             status_lbl.config(text="RUNNING", fg=theme.ACCENT)
             phase_lbl.config(text="running", fg=theme.ACCENT)
             row["failure_reason"] = ""
+            row["start_time"] = time.monotonic()
         elif state == "done":
             self._running_jobs.discard(idx)
             status_lbl.config(text="DONE", fg=theme.GREEN)
@@ -1801,12 +1827,20 @@ class ForensicPackApp(tk.Tk):
         phase_lbl = row["phase_lbl"]
         pb = row["progress"]
         friendly_phase = friendly_phase_label(phase, self._current_run_mode())
+        start_t = row.get("start_time")
+        if start_t is not None and 0.02 < fraction < 0.99:
+            elapsed = time.monotonic() - start_t
+            eta_secs = elapsed / fraction * (1.0 - fraction)
+            if eta_secs >= 1.0:
+                friendly_phase = f"{friendly_phase} (~{format_duration(eta_secs)})"
         phase_lbl.config(text=friendly_phase, fg=theme.FG2 if phase not in {"done", "failed"} else theme.GREEN)
         pb.config(mode="determinate", value=fraction * 100)
-        self._current_phase = friendly_phase
+        self._current_phase = friendly_phase_label(phase, self._current_run_mode())
         if fraction > 0 and status_lbl.cget("text") == "Queued":
             status_lbl.config(text="RUNNING", fg=theme.ACCENT)
             row["state"] = "running"
+            if row.get("start_time") is None:
+                row["start_time"] = time.monotonic()
             self._sync_skip_button_state(row)
             self._refresh_queue_filter_counts()
 

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 import errno
@@ -184,8 +185,10 @@ def load_gui_settings(path: Path | None = None) -> dict[str, object]:
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
+            logging.warning("GUI settings file %s contains non-dict data; reverting to defaults.", target)
             return dict(GUI_SETTINGS_DEFAULTS)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Failed to load GUI settings from %s: %s; reverting to defaults.", target, exc)
         return dict(GUI_SETTINGS_DEFAULTS)
     return _upgrade_settings(raw)
 

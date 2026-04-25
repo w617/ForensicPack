@@ -1,4 +1,5 @@
 import argparse
+import os
 import signal
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     pack.add_argument("--format", required=True, choices=["7z", "ZIP", "TAR.GZ", "TAR.BZ2", "zip", "tar.gz", "tar.bz2"])
     pack.add_argument("--compression", default="Normal (5)", choices=list(COMPRESSION_LEVELS))
     pack.add_argument("--hash", dest="hashes", action="append", default=[], help="Optional repeatable hash algorithm value, e.g. --hash SHA256")
-    pack.add_argument("--threads", type=int, default=min(4, __import__("os").cpu_count() or 1))
+    pack.add_argument("--threads", type=int, default=min(4, os.cpu_count() or 1))
     pack.add_argument("--password", default="")
     pack.add_argument("--delete-source", action="store_true")
     pack.add_argument("--skip-existing", action="store_true")

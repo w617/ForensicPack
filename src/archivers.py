@@ -64,14 +64,22 @@ def _run_7zip(job_id: int, args: list[str], token: CancellationToken, runtime: R
     )
     runtime.set_process(job_id, proc)
     try:
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError("subprocess stdout is None; cannot read 7z output.")
+        output_lines: list[str] = []
         for line in proc.stdout:
             token.raise_if_requested(job_id)
             line = line.rstrip()
-            if line and callbacks.verbose_cb:
-                callbacks.verbose_cb(line)
+            if line:
+                output_lines.append(line)
+                if callbacks.verbose_cb:
+                    callbacks.verbose_cb(line)
         proc.wait()
-        return proc.returncode == 0
+        if proc.returncode != 0:
+            for ln in output_lines[-15:]:
+                callbacks.log_cb(f"  [7z] {ln}", "#f85149")
+            return False
+        return True
     finally:
         runtime.set_process(job_id, None)
 
