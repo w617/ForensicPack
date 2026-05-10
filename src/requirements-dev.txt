@@ -1,2 +1,2 @@
-pytest==9.0.1
+pytest==9.0.3
 pyinstaller==6.16.0
