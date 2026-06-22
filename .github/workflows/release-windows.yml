@@ -60,7 +60,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         shell: pwsh
         working-directory: src
-        run: python -m cyclonedx_py environment --output-format JSON --output-file "../ForensicPack-${{ env.RELEASE_TAG }}-sbom.cdx.json"
+        run: '& ".venv-build/Scripts/cyclonedx-py.exe" environment --output-format JSON --output-file "../ForensicPack-${{ env.RELEASE_TAG }}-sbom.cdx.json"'
 
       - name: Package release artifact and checksum
         shell: pwsh
