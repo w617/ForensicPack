@@ -1,21 +1,26 @@
+import threading
+import time
 from pathlib import Path
+from typing import Callable, Literal
 
 import archivers as _archivers
-import core as _core
-import hashing as _hashing
+import core_v2 as _core
+import forensic_inventory as _inventory
+import safety as _safety
 import utils as _utils
-from core import run_verify_session
+from core_v2 import run_verify_session
 from hashing import hash_file
 from models import (
     CancellationToken,
     FileRecord,
     JobCallbacks,
+    JobCancelled,
     JobConfig,
     JobResult,
+    JobSkipped,
     ProgressEvent,
     RuntimeState,
-    JobCancelled,
-    JobSkipped,
+    ScanIssue,
 )
 from state_db import StateStore, open_state_store
 from utils import (
@@ -26,51 +31,79 @@ from utils import (
     SCAN_MODES,
     THREAD_STRATEGIES,
     normalize_hash_algorithms,
+    safe_resolve,
 )
-
 from version import APP_AUTHOR, APP_NAME, APP_VERSION
 
 _CORE_RUN_SESSION = _core.run_session
-_CORE_VALIDATE_CONFIG = _core.validate_config
 
 
-def _run_7zip(job_id: int, args: list[str], token: CancellationToken, runtime: RuntimeState, callbacks: JobCallbacks) -> bool:
+def _run_7zip(
+    job_id: int,
+    args: list[str],
+    token: CancellationToken,
+    runtime: RuntimeState,
+    callbacks: JobCallbacks,
+) -> bool:
     return _archivers._run_7zip(job_id, args, token, runtime, callbacks)
 
 
-def _redact_command(cmd: list[str]) -> str:
-    return _utils.redact_command(cmd)
+def _redact_command(command: list[str]) -> str:
+    return _utils.redact_command(command)
 
 
 def _cleanup_cancel_artifacts(output_dir: Path) -> int:
     return _utils.cleanup_cancel_artifacts(Path(output_dir))
 
 
-def _validate_config_allow_same_folder(config: JobConfig) -> None:
-    """Validate normally while permitting source_dir == output_dir.
+def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Path], list[Path]]:
+    """Refine broad generated-file filtering using sibling source names."""
+    processable, excluded = _safety.classify_source_items(source_dir, config)
+    sibling_names = {path.name for path in source_dir.iterdir()}
+    restored: list[Path] = []
+    generated_suffixes = (
+        ".manifest.json.sig",
+        ".certificate.pem",
+        ".manifest.json",
+        ".manifest.txt",
+        ".audit.jsonl",
+        ".sha256",
+    )
+    for path in excluded:
+        lowered = path.name.casefold()
+        matched_suffix = next((suffix for suffix in generated_suffixes if lowered.endswith(suffix)), None)
+        if matched_suffix:
+            source_name = path.name[: -len(matched_suffix)]
+            if source_name not in sibling_names:
+                restored.append(path)
+            continue
+        if lowered.endswith(".pem") or lowered.endswith(".sig"):
+            restored.append(path)
+    if restored:
+        processable = sorted([*processable, *restored], key=lambda path: path.name.casefold())
+        excluded = [path for path in excluded if path not in restored]
+    return processable, excluded
 
-    Core validation intentionally blocks nested source/output paths to prevent
-    recursive packaging. A shared source/output directory is safe because the
-    session snapshots its immediate children before any temporary archive or
-    report files are created.
-    """
-    source_resolved = _utils.safe_resolve(config.source_dir)
-    output_resolved = _utils.safe_resolve(config.output_dir)
-    if source_resolved != output_resolved:
-        _CORE_VALIDATE_CONFIG(config)
-        return
 
-    original_output = config.output_dir
-    validation_output = source_resolved.parent / f".{source_resolved.name}_forensicpack_validation"
-    config.output_dir = validation_output
-    try:
-        _CORE_VALIDATE_CONFIG(config)
-    finally:
-        config.output_dir = original_output
-
-
-def build_inventory(item_path: Path, job_id: int, token: CancellationToken, callbacks: JobCallbacks, scan_mode: str = "deterministic"):
-    return _hashing.build_inventory(item_path, job_id, token, callbacks, scan_mode=scan_mode)
+def build_inventory(
+    item_path: Path,
+    job_id: int,
+    token: CancellationToken,
+    callbacks: JobCallbacks,
+    scan_mode: str = "deterministic",
+    scan_error_mode: str | None = None,
+):
+    records, total_size, issues = _inventory.build_forensic_inventory(
+        item_path,
+        job_id,
+        token,
+        callbacks,
+        scan_mode=scan_mode,
+        scan_error_mode=scan_error_mode or "best-effort",
+    )
+    if scan_error_mode is None:
+        return records, total_size
+    return records, total_size, issues
 
 
 def create_archive(
@@ -84,7 +117,6 @@ def create_archive(
     callbacks: JobCallbacks,
     temp_archive: Path,
 ) -> Path:
-    # Keep 7z execution hookable via engine._run_7zip for tests.
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
@@ -103,44 +135,188 @@ def create_archive(
         _archivers._run_7zip = original_run_7zip
 
 
-def verify_archive(archive_path: Path, archive_fmt: str, callbacks: JobCallbacks, job_id: int | None = None, token: CancellationToken | None = None) -> bool:
+def verify_archive(
+    archive_path: Path,
+    archive_fmt: str,
+    callbacks: JobCallbacks,
+    job_id: int | None = None,
+    token: CancellationToken | None = None,
+) -> bool:
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
-        return _archivers.verify_archive(archive_path, archive_fmt, callbacks, job_id=job_id, token=token)
+        return _archivers.verify_archive(
+            archive_path,
+            archive_fmt,
+            callbacks,
+            job_id=job_id,
+            token=token,
+        )
     finally:
         _archivers._run_7zip = original_run_7zip
 
 
-def run_session(config: JobConfig, callbacks: JobCallbacks, token: CancellationToken | None = None) -> list[JobResult]:
-    # Route core internals through engine symbols so monkeypatching engine works.
+def run_session(
+    config: JobConfig,
+    callbacks: JobCallbacks,
+    token: CancellationToken | None = None,
+) -> list[JobResult]:
+    source = safe_resolve(config.source_dir)
+    output = safe_resolve(config.output_dir)
+    if source == output and config.source_dir.is_dir() and not any(config.source_dir.iterdir()):
+        raise ValueError("Source and output directories must be different when the shared source folder is empty.")
+
+    explicit_no_hash = not config.hash_algorithms
+    original_member_verify = config.verify_member_hashes
+    original_fail_on_collision = config.fail_on_collision
+    if explicit_no_hash:
+        config.verify_member_hashes = False
+    if config.resume_enabled:
+        config.fail_on_collision = False
+
     _core.create_archive = create_archive
-    _core.build_inventory = build_inventory
-    _core.cleanup_cancel_artifacts = _cleanup_cancel_artifacts
     _core.verify_archive = verify_archive
-
+    _core.build_forensic_inventory = build_inventory
+    _core.classify_source_items = classify_source_items
     original_run_7zip = _archivers._run_7zip
-    original_validate_config = _core.validate_config
     _archivers._run_7zip = _run_7zip
-    _core.validate_config = _validate_config_allow_same_folder
     try:
-        return _CORE_RUN_SESSION(config, callbacks, token)
+        results = _CORE_RUN_SESSION(config, callbacks, token)
     finally:
         _archivers._run_7zip = original_run_7zip
-        _core.validate_config = original_validate_config
+        config.verify_member_hashes = original_member_verify
+        config.fail_on_collision = original_fail_on_collision
+
+    no_hash_warnings = {
+        "Archive member hash verification was disabled.",
+        "Archive hash skipped: no hash algorithms selected.",
+    }
+    for result in results:
+        if "SOURCE RETAINED" in result.verify.upper():
+            result.verify = "PASS (SOURCE RETAINED)"
+        if explicit_no_hash:
+            result.warnings = [warning for warning in result.warnings if warning not in no_hash_warnings]
+            result.content_verify = "NOT REQUESTED"
+            if result.verify == "PASS WITH WARNINGS" and not result.warnings and not result.scan_issues:
+                result.verify = "PASS"
+                result.status = "success"
+    return results
 
 
-def process_cases(*args, **kwargs):
-    # Keep process_cases using engine.run_session so tests can monkeypatch it.
-    original_run_session = _core.run_session
-    _core.run_session = run_session
+def process_cases(
+    source_dir: str,
+    output_dir: str,
+    archive_fmt: str,
+    compress_level_label: str,
+    split_enabled: bool,
+    split_size_str: str,
+    hash_algorithms: list,
+    password: str,
+    delete_source: bool,
+    skip_existing: bool = False,
+    progress_overall_cb: Callable[[float], None] = lambda _fraction: None,
+    progress_case_cb: Callable[[float], None] = lambda _fraction: None,
+    log_cb: Callable[[str, str | None], None] = lambda _message, _colour=None: None,
+    status_cb: Callable[[str], None] = lambda _text: None,
+    cancel_flag: threading.Event | None = None,
+    skip_current_flag: threading.Event | None = None,
+    queue_cb: Callable[[list[str]], None] | None = None,
+    item_status_cb: Callable[[int, str], None] | None = None,
+    case_metadata: dict | None = None,
+    threads: int = 1,
+    item_progress_cb: Callable[[int, float, str], None] | None = None,
+    item_failure_cb: Callable[[int, str], None] | None = None,
+    scan_mode: Literal["deterministic", "fast"] = "deterministic",
+    archive_hash_mode: Literal["always", "skip"] = "always",
+    thread_strategy: Literal["fixed", "auto"] = "fixed",
+    progress_interval_ms: int = 200,
+    resume_enabled: bool = False,
+    dry_run: bool = False,
+    state_db_path: str | None = None,
+    report_json: bool = False,
+    embed_manifest_in_archive: bool = True,
+) -> list[dict[str, object]]:
+    config = JobConfig(
+        source_dir=Path(source_dir),
+        output_dir=Path(output_dir),
+        archive_fmt=archive_fmt,
+        compress_level_label=compress_level_label,
+        split_enabled=split_enabled,
+        split_size_str=split_size_str,
+        hash_algorithms=list(hash_algorithms),
+        password=password.strip() or None,
+        delete_source=delete_source,
+        skip_existing=skip_existing,
+        case_metadata=case_metadata,
+        threads=threads,
+        scan_mode=scan_mode,
+        archive_hash_mode=archive_hash_mode,
+        thread_strategy=thread_strategy,
+        progress_interval_ms=progress_interval_ms,
+        resume_enabled=resume_enabled,
+        dry_run=dry_run,
+        state_db_path=Path(state_db_path) if state_db_path else None,
+        report_json=report_json,
+        embed_manifest_in_archive=embed_manifest_in_archive,
+    )
+    token = CancellationToken()
+    running_jobs: set[int] = set()
+    state_lock = threading.Lock()
+    last_started_job_id: int | None = None
+
+    def item_status_proxy(index: int, state: str) -> None:
+        nonlocal last_started_job_id
+        with state_lock:
+            if state == "running":
+                running_jobs.add(index)
+                last_started_job_id = index
+            elif state in {"done", "warning", "error", "skipped", "cancelled"}:
+                running_jobs.discard(index)
+        if item_status_cb:
+            item_status_cb(index, state)
+
+    def watch_flags() -> None:
+        last_skip_state = False
+        while not getattr(threading.current_thread(), "_stop_requested", False):
+            if cancel_flag and cancel_flag.is_set():
+                token.request_cancel()
+                break
+            if skip_current_flag:
+                current_skip_state = skip_current_flag.is_set()
+                if current_skip_state and not last_skip_state:
+                    with state_lock:
+                        target = max(running_jobs) if running_jobs else last_started_job_id
+                    if target is not None:
+                        token.request_skip(target)
+                last_skip_state = current_skip_state
+            time.sleep(0.05)
+
+    watcher = None
+    if cancel_flag or skip_current_flag:
+        watcher = threading.Thread(target=watch_flags, daemon=True)
+        watcher.start()
+
+    callbacks = JobCallbacks(
+        log_cb=log_cb,
+        progress_overall_cb=progress_overall_cb,
+        progress_case_cb=progress_case_cb,
+        status_cb=status_cb,
+        queue_cb=queue_cb,
+        item_status_cb=item_status_proxy,
+        item_progress_cb=item_progress_cb,
+        item_failure_cb=item_failure_cb,
+    )
     try:
-        return _core.process_cases(*args, **kwargs)
+        results = run_session(config, callbacks, token)
     finally:
-        _core.run_session = original_run_session
+        if watcher is not None:
+            setattr(watcher, "_stop_requested", True)
+            watcher.join(timeout=0.5)
+    return [result.to_report_row() for result in results]
 
 
 find_7zip = _archivers.find_7zip
+validate_config = _core.validate_config
 
 
 __all__ = [
@@ -160,6 +336,7 @@ __all__ = [
     "ProgressEvent",
     "RuntimeState",
     "FileRecord",
+    "ScanIssue",
     "StateStore",
     "JobCancelled",
     "JobSkipped",
@@ -173,6 +350,8 @@ __all__ = [
     "find_7zip",
     "create_archive",
     "build_inventory",
+    "classify_source_items",
+    "validate_config",
     "_run_7zip",
     "_redact_command",
     "_cleanup_cancel_artifacts",

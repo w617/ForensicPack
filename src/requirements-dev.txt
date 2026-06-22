@@ -1,2 +1,10 @@
-pytest==9.0.1
+pytest==9.0.3
+pytest-cov==7.0.0
 pyinstaller==6.16.0
+reportlab==4.4.4
+cryptography==48.0.1
+ruff==0.14.10
+mypy==1.19.0
+bandit==1.9.2
+pip-audit==2.10.0
+cyclonedx-bom==7.2.1
