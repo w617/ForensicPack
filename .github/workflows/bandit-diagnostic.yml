@@ -8,13 +8,21 @@ permissions:
   contents: read
 
 jobs:
-  hashing:
+  hashing-module:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --quiet bandit==1.9.2
       - working-directory: src
-        run: python3 -m bandit -ll hashing.py content_verification.py
+        run: python3 -m bandit -ll hashing.py
+
+  content-verification-module:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --quiet bandit==1.9.2
+      - working-directory: src
+        run: python3 -m bandit -ll content_verification.py
 
   package-metadata:
     runs-on: ubuntu-latest
