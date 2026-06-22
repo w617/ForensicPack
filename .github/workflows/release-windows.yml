@@ -2,11 +2,20 @@ name: Release Windows EXE
 
 on:
   push:
+    branches:
+      - "main"
     tags:
       - "v*"
+    paths:
+      - "src/release_version.txt"
+      - ".github/workflows/release-windows.yml"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
@@ -23,14 +32,16 @@ jobs:
           cache: pip
           cache-dependency-path: src/requirements-dev.txt
 
-      - name: Verify tag matches app version
+      - name: Resolve release version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
           $version = (Get-Content "src/release_version.txt" -Raw).Trim()
           if (-not $version) { throw "Release version not found in src/release_version.txt" }
-          if ($version -ne $tag) { throw "Tag v$tag does not match application version $version" }
+          $releaseTag = "v$version"
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne $releaseTag) {
+            throw "Tag ${{ github.ref_name }} does not match application version $version"
+          }
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build executable and run tests
         shell: pwsh
@@ -48,23 +59,23 @@ jobs:
       - name: Generate CycloneDX SBOM
         shell: pwsh
         working-directory: src
-        run: python -m cyclonedx_py environment --output-format JSON --output-file "../ForensicPack-${{ github.ref_name }}-sbom.cdx.json"
+        run: python -m cyclonedx_py environment --output-format JSON --output-file "../ForensicPack-${{ env.RELEASE_TAG }}-sbom.cdx.json"
 
       - name: Package release artifact and checksum
         shell: pwsh
         run: |
-          $artifactName = "ForensicPack-${{ github.ref_name }}-windows"
+          $artifactName = "ForensicPack-${{ env.RELEASE_TAG }}-windows"
           Compress-Archive -Path "src/dist/ForensicPack/*" -DestinationPath "$artifactName.zip" -Force
           $hash = (Get-FileHash "$artifactName.zip" -Algorithm SHA256).Hash
           "$hash *$artifactName.zip" | Out-File "$artifactName.zip.sha256" -Encoding ascii
           "ARTIFACT_PATH=$artifactName.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CHECKSUM_PATH=$artifactName.zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "SBOM_PATH=ForensicPack-${{ github.ref_name }}-sbom.cdx.json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SBOM_PATH=ForensicPack-${{ env.RELEASE_TAG }}-sbom.cdx.json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: forensicpack-windows-${{ github.ref_name }}
+          name: forensicpack-windows-${{ env.RELEASE_TAG }}
           path: |
             ${{ env.ARTIFACT_PATH }}
             ${{ env.CHECKSUM_PATH }}
@@ -73,6 +84,9 @@ jobs:
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ForensicPack ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
             ${{ env.ARTIFACT_PATH }}
