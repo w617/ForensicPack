@@ -11,7 +11,16 @@ from utils import redact_command
 
 
 def _new_hasher(algorithm: str):
-    return hashlib.new(algorithm.lower().replace("-", ""))
+    normalized = algorithm.lower().replace("-", "")
+    if normalized == "md5":
+        return hashlib.md5(usedforsecurity=False)
+    if normalized == "sha1":
+        return hashlib.sha1(usedforsecurity=False)
+    if normalized == "sha256":
+        return hashlib.sha256()
+    if normalized == "sha512":
+        return hashlib.sha512()
+    raise ValueError(f"Unsupported hash algorithm: {algorithm}")
 
 
 def _hash_stream(handle, algorithm: str, token: CancellationToken, job_id: int) -> str:
