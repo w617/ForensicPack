@@ -1,21 +1,23 @@
 from pathlib import Path
 
 import archivers as _archivers
-import core as _core
+import core_v2 as _core
+import forensic_inventory as _inventory
 import hashing as _hashing
 import utils as _utils
-from core import run_verify_session
+from core_v2 import run_verify_session
 from hashing import hash_file
 from models import (
     CancellationToken,
     FileRecord,
     JobCallbacks,
+    JobCancelled,
     JobConfig,
     JobResult,
+    JobSkipped,
     ProgressEvent,
     RuntimeState,
-    JobCancelled,
-    JobSkipped,
+    ScanIssue,
 )
 from state_db import StateStore, open_state_store
 from utils import (
@@ -27,50 +29,45 @@ from utils import (
     THREAD_STRATEGIES,
     normalize_hash_algorithms,
 )
-
 from version import APP_AUTHOR, APP_NAME, APP_VERSION
 
 _CORE_RUN_SESSION = _core.run_session
-_CORE_VALIDATE_CONFIG = _core.validate_config
 
 
-def _run_7zip(job_id: int, args: list[str], token: CancellationToken, runtime: RuntimeState, callbacks: JobCallbacks) -> bool:
+def _run_7zip(
+    job_id: int,
+    args: list[str],
+    token: CancellationToken,
+    runtime: RuntimeState,
+    callbacks: JobCallbacks,
+) -> bool:
     return _archivers._run_7zip(job_id, args, token, runtime, callbacks)
 
 
-def _redact_command(cmd: list[str]) -> str:
-    return _utils.redact_command(cmd)
+def _redact_command(command: list[str]) -> str:
+    return _utils.redact_command(command)
 
 
 def _cleanup_cancel_artifacts(output_dir: Path) -> int:
     return _utils.cleanup_cancel_artifacts(Path(output_dir))
 
 
-def _validate_config_allow_same_folder(config: JobConfig) -> None:
-    """Validate normally while permitting source_dir == output_dir.
-
-    Core validation intentionally blocks nested source/output paths to prevent
-    recursive packaging. A shared source/output directory is safe because the
-    session snapshots its immediate children before any temporary archive or
-    report files are created.
-    """
-    source_resolved = _utils.safe_resolve(config.source_dir)
-    output_resolved = _utils.safe_resolve(config.output_dir)
-    if source_resolved != output_resolved:
-        _CORE_VALIDATE_CONFIG(config)
-        return
-
-    original_output = config.output_dir
-    validation_output = source_resolved.parent / f".{source_resolved.name}_forensicpack_validation"
-    config.output_dir = validation_output
-    try:
-        _CORE_VALIDATE_CONFIG(config)
-    finally:
-        config.output_dir = original_output
-
-
-def build_inventory(item_path: Path, job_id: int, token: CancellationToken, callbacks: JobCallbacks, scan_mode: str = "deterministic"):
-    return _hashing.build_inventory(item_path, job_id, token, callbacks, scan_mode=scan_mode)
+def build_inventory(
+    item_path: Path,
+    job_id: int,
+    token: CancellationToken,
+    callbacks: JobCallbacks,
+    scan_mode: str = "deterministic",
+    scan_error_mode: str = "best-effort",
+):
+    return _inventory.build_forensic_inventory(
+        item_path,
+        job_id,
+        token,
+        callbacks,
+        scan_mode=scan_mode,
+        scan_error_mode=scan_error_mode,
+    )
 
 
 def create_archive(
@@ -84,7 +81,6 @@ def create_archive(
     callbacks: JobCallbacks,
     temp_archive: Path,
 ) -> Path:
-    # Keep 7z execution hookable via engine._run_7zip for tests.
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
@@ -103,35 +99,44 @@ def create_archive(
         _archivers._run_7zip = original_run_7zip
 
 
-def verify_archive(archive_path: Path, archive_fmt: str, callbacks: JobCallbacks, job_id: int | None = None, token: CancellationToken | None = None) -> bool:
+def verify_archive(
+    archive_path: Path,
+    archive_fmt: str,
+    callbacks: JobCallbacks,
+    job_id: int | None = None,
+    token: CancellationToken | None = None,
+) -> bool:
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
-        return _archivers.verify_archive(archive_path, archive_fmt, callbacks, job_id=job_id, token=token)
+        return _archivers.verify_archive(
+            archive_path,
+            archive_fmt,
+            callbacks,
+            job_id=job_id,
+            token=token,
+        )
     finally:
         _archivers._run_7zip = original_run_7zip
 
 
-def run_session(config: JobConfig, callbacks: JobCallbacks, token: CancellationToken | None = None) -> list[JobResult]:
-    # Route core internals through engine symbols so monkeypatching engine works.
+def run_session(
+    config: JobConfig,
+    callbacks: JobCallbacks,
+    token: CancellationToken | None = None,
+) -> list[JobResult]:
     _core.create_archive = create_archive
-    _core.build_inventory = build_inventory
-    _core.cleanup_cancel_artifacts = _cleanup_cancel_artifacts
     _core.verify_archive = verify_archive
-
+    _core.build_forensic_inventory = build_inventory
     original_run_7zip = _archivers._run_7zip
-    original_validate_config = _core.validate_config
     _archivers._run_7zip = _run_7zip
-    _core.validate_config = _validate_config_allow_same_folder
     try:
         return _CORE_RUN_SESSION(config, callbacks, token)
     finally:
         _archivers._run_7zip = original_run_7zip
-        _core.validate_config = original_validate_config
 
 
 def process_cases(*args, **kwargs):
-    # Keep process_cases using engine.run_session so tests can monkeypatch it.
     original_run_session = _core.run_session
     _core.run_session = run_session
     try:
@@ -141,6 +146,7 @@ def process_cases(*args, **kwargs):
 
 
 find_7zip = _archivers.find_7zip
+validate_config = _core.validate_config
 
 
 __all__ = [
@@ -160,6 +166,7 @@ __all__ = [
     "ProgressEvent",
     "RuntimeState",
     "FileRecord",
+    "ScanIssue",
     "StateStore",
     "JobCancelled",
     "JobSkipped",
@@ -173,6 +180,7 @@ __all__ = [
     "find_7zip",
     "create_archive",
     "build_inventory",
+    "validate_config",
     "_run_7zip",
     "_redact_command",
     "_cleanup_cancel_artifacts",
