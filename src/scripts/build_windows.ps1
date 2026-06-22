@@ -1,6 +1,7 @@
 param(
     [string]$Python = "python",
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [string]$SigningScript = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +48,8 @@ Write-Host "[INFO] Building ForensicPack.exe with PyInstaller..."
     --name "ForensicPack" `
     --icon "assets/forensicpack_icon.ico" `
     --add-data "assets;assets" `
+    --collect-all reportlab `
+    --collect-all cryptography `
     forensicpack.py
 
 $exePath = Join-Path $repoRoot "dist/ForensicPack/ForensicPack.exe"
@@ -54,4 +57,15 @@ if (-not (Test-Path $exePath)) {
     throw "Build completed but executable was not found at $exePath"
 }
 
+if ($SigningScript) {
+    $resolvedSigningScript = Resolve-Path $SigningScript -ErrorAction Stop
+    Write-Host "[INFO] Running approved external code-signing hook..."
+    & $resolvedSigningScript $exePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Code-signing hook failed with exit code $LASTEXITCODE"
+    }
+}
+
+$hash = (Get-FileHash $exePath -Algorithm SHA256).Hash
+Write-Host "[INFO] Executable SHA256: $hash"
 Write-Host "[INFO] Build complete: $exePath"
