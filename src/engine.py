@@ -6,6 +6,7 @@ from typing import Callable, Literal
 import archivers as _archivers
 import core_v2 as _core
 import forensic_inventory as _inventory
+import safety as _safety
 import utils as _utils
 from core_v2 import run_verify_session
 from hashing import hash_file
@@ -53,6 +54,20 @@ def _redact_command(command: list[str]) -> str:
 
 def _cleanup_cancel_artifacts(output_dir: Path) -> int:
     return _utils.cleanup_cancel_artifacts(Path(output_dir))
+
+
+def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Path], list[Path]]:
+    """Apply generated-output filtering without excluding unrelated PEM evidence."""
+    processable, excluded = _safety.classify_source_items(source_dir, config)
+    restored = [
+        path
+        for path in excluded
+        if path.suffix.casefold() == ".pem" and not path.name.casefold().endswith(".certificate.pem")
+    ]
+    if restored:
+        processable = sorted([*processable, *restored], key=lambda path: path.name.casefold())
+        excluded = [path for path in excluded if path not in restored]
+    return processable, excluded
 
 
 def build_inventory(
@@ -144,6 +159,7 @@ def run_session(
     _core.create_archive = create_archive
     _core.verify_archive = verify_archive
     _core.build_forensic_inventory = build_inventory
+    _core.classify_source_items = classify_source_items
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
@@ -314,6 +330,7 @@ __all__ = [
     "find_7zip",
     "create_archive",
     "build_inventory",
+    "classify_source_items",
     "validate_config",
     "_run_7zip",
     "_redact_command",
