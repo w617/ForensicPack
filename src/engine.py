@@ -58,16 +58,19 @@ def build_inventory(
     token: CancellationToken,
     callbacks: JobCallbacks,
     scan_mode: str = "deterministic",
-    scan_error_mode: str = "best-effort",
+    scan_error_mode: str | None = None,
 ):
-    return _inventory.build_forensic_inventory(
+    records, total_size, issues = _inventory.build_forensic_inventory(
         item_path,
         job_id,
         token,
         callbacks,
         scan_mode=scan_mode,
-        scan_error_mode=scan_error_mode,
+        scan_error_mode=scan_error_mode or "best-effort",
     )
+    if scan_error_mode is None:
+        return records, total_size
+    return records, total_size, issues
 
 
 def create_archive(
