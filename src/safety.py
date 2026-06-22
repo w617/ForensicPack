@@ -21,6 +21,7 @@ _GENERATED_PATTERNS = (
     "*.partial.*",
     "*.manifest.json",
     "*.manifest.txt",
+    "*.audit.jsonl",
     "*.sha256",
     "*.sig",
     "*.pem",
