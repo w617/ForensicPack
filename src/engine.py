@@ -57,13 +57,28 @@ def _cleanup_cancel_artifacts(output_dir: Path) -> int:
 
 
 def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Path], list[Path]]:
-    """Apply generated-output filtering without excluding unrelated PEM evidence."""
+    """Refine broad generated-file filtering using sibling source names."""
     processable, excluded = _safety.classify_source_items(source_dir, config)
-    restored = [
-        path
-        for path in excluded
-        if path.suffix.casefold() == ".pem" and not path.name.casefold().endswith(".certificate.pem")
-    ]
+    sibling_names = {path.name for path in source_dir.iterdir()}
+    restored: list[Path] = []
+    generated_suffixes = (
+        ".manifest.json.sig",
+        ".certificate.pem",
+        ".manifest.json",
+        ".manifest.txt",
+        ".audit.jsonl",
+        ".sha256",
+    )
+    for path in excluded:
+        lowered = path.name.casefold()
+        matched_suffix = next((suffix for suffix in generated_suffixes if lowered.endswith(suffix)), None)
+        if matched_suffix:
+            source_name = path.name[: -len(matched_suffix)]
+            if source_name not in sibling_names:
+                restored.append(path)
+            continue
+        if lowered.endswith(".pem") or lowered.endswith(".sig"):
+            restored.append(path)
     if restored:
         processable = sorted([*processable, *restored], key=lambda path: path.name.casefold())
         excluded = [path for path in excluded if path not in restored]
@@ -153,8 +168,11 @@ def run_session(
 
     explicit_no_hash = not config.hash_algorithms
     original_member_verify = config.verify_member_hashes
+    original_fail_on_collision = config.fail_on_collision
     if explicit_no_hash:
         config.verify_member_hashes = False
+    if config.resume_enabled:
+        config.fail_on_collision = False
 
     _core.create_archive = create_archive
     _core.verify_archive = verify_archive
@@ -167,16 +185,18 @@ def run_session(
     finally:
         _archivers._run_7zip = original_run_7zip
         config.verify_member_hashes = original_member_verify
+        config.fail_on_collision = original_fail_on_collision
 
+    no_hash_warnings = {
+        "Archive member hash verification was disabled.",
+        "Archive hash skipped: no hash algorithms selected.",
+    }
     for result in results:
         if "SOURCE RETAINED" in result.verify.upper():
             result.verify = "PASS (SOURCE RETAINED)"
         if explicit_no_hash:
-            result.warnings = [
-                warning
-                for warning in result.warnings
-                if warning != "Archive member hash verification was disabled."
-            ]
+            result.warnings = [warning for warning in result.warnings if warning not in no_hash_warnings]
+            result.content_verify = "NOT REQUESTED"
             if result.verify == "PASS WITH WARNINGS" and not result.warnings and not result.scan_issues:
                 result.verify = "PASS"
                 result.status = "success"
