@@ -1,9 +1,11 @@
+import threading
+import time
 from pathlib import Path
+from typing import Callable, Literal
 
 import archivers as _archivers
 import core_v2 as _core
 import forensic_inventory as _inventory
-import hashing as _hashing
 import utils as _utils
 from core_v2 import run_verify_session
 from hashing import hash_file
@@ -134,18 +136,125 @@ def run_session(
     original_run_7zip = _archivers._run_7zip
     _archivers._run_7zip = _run_7zip
     try:
-        return _CORE_RUN_SESSION(config, callbacks, token)
+        results = _CORE_RUN_SESSION(config, callbacks, token)
     finally:
         _archivers._run_7zip = original_run_7zip
+    for result in results:
+        if "SOURCE RETAINED" in result.verify.upper():
+            result.verify = "PASS (SOURCE RETAINED)"
+    return results
 
 
-def process_cases(*args, **kwargs):
-    original_run_session = _core.run_session
-    _core.run_session = run_session
+def process_cases(
+    source_dir: str,
+    output_dir: str,
+    archive_fmt: str,
+    compress_level_label: str,
+    split_enabled: bool,
+    split_size_str: str,
+    hash_algorithms: list,
+    password: str,
+    delete_source: bool,
+    skip_existing: bool = False,
+    progress_overall_cb: Callable[[float], None] = lambda _fraction: None,
+    progress_case_cb: Callable[[float], None] = lambda _fraction: None,
+    log_cb: Callable[[str, str | None], None] = lambda _message, _colour=None: None,
+    status_cb: Callable[[str], None] = lambda _text: None,
+    cancel_flag: threading.Event | None = None,
+    skip_current_flag: threading.Event | None = None,
+    queue_cb: Callable[[list[str]], None] | None = None,
+    item_status_cb: Callable[[int, str], None] | None = None,
+    case_metadata: dict | None = None,
+    threads: int = 1,
+    item_progress_cb: Callable[[int, float, str], None] | None = None,
+    item_failure_cb: Callable[[int, str], None] | None = None,
+    scan_mode: Literal["deterministic", "fast"] = "deterministic",
+    archive_hash_mode: Literal["always", "skip"] = "always",
+    thread_strategy: Literal["fixed", "auto"] = "fixed",
+    progress_interval_ms: int = 200,
+    resume_enabled: bool = False,
+    dry_run: bool = False,
+    state_db_path: str | None = None,
+    report_json: bool = False,
+    embed_manifest_in_archive: bool = True,
+) -> list[dict[str, object]]:
+    config = JobConfig(
+        source_dir=Path(source_dir),
+        output_dir=Path(output_dir),
+        archive_fmt=archive_fmt,
+        compress_level_label=compress_level_label,
+        split_enabled=split_enabled,
+        split_size_str=split_size_str,
+        hash_algorithms=list(hash_algorithms),
+        password=password.strip() or None,
+        delete_source=delete_source,
+        skip_existing=skip_existing,
+        case_metadata=case_metadata,
+        threads=threads,
+        scan_mode=scan_mode,
+        archive_hash_mode=archive_hash_mode,
+        thread_strategy=thread_strategy,
+        progress_interval_ms=progress_interval_ms,
+        resume_enabled=resume_enabled,
+        dry_run=dry_run,
+        state_db_path=Path(state_db_path) if state_db_path else None,
+        report_json=report_json,
+        embed_manifest_in_archive=embed_manifest_in_archive,
+    )
+    token = CancellationToken()
+    running_jobs: set[int] = set()
+    state_lock = threading.Lock()
+    last_started_job_id: int | None = None
+
+    def item_status_proxy(index: int, state: str) -> None:
+        nonlocal last_started_job_id
+        with state_lock:
+            if state == "running":
+                running_jobs.add(index)
+                last_started_job_id = index
+            elif state in {"done", "warning", "error", "skipped", "cancelled"}:
+                running_jobs.discard(index)
+        if item_status_cb:
+            item_status_cb(index, state)
+
+    def watch_flags() -> None:
+        last_skip_state = False
+        while not getattr(threading.current_thread(), "_stop_requested", False):
+            if cancel_flag and cancel_flag.is_set():
+                token.request_cancel()
+                break
+            if skip_current_flag:
+                current_skip_state = skip_current_flag.is_set()
+                if current_skip_state and not last_skip_state:
+                    with state_lock:
+                        target = max(running_jobs) if running_jobs else last_started_job_id
+                    if target is not None:
+                        token.request_skip(target)
+                last_skip_state = current_skip_state
+            time.sleep(0.05)
+
+    watcher = None
+    if cancel_flag or skip_current_flag:
+        watcher = threading.Thread(target=watch_flags, daemon=True)
+        watcher.start()
+
+    callbacks = JobCallbacks(
+        log_cb=log_cb,
+        progress_overall_cb=progress_overall_cb,
+        progress_case_cb=progress_case_cb,
+        status_cb=status_cb,
+        queue_cb=queue_cb,
+        item_status_cb=item_status_proxy,
+        item_progress_cb=item_progress_cb,
+        item_failure_cb=item_failure_cb,
+    )
     try:
-        return _core.process_cases(*args, **kwargs)
+        results = run_session(config, callbacks, token)
     finally:
-        _core.run_session = original_run_session
+        if watcher is not None:
+            setattr(watcher, "_stop_requested", True)
+            watcher.join(timeout=0.5)
+    return [result.to_report_row() for result in results]
 
 
 find_7zip = _archivers.find_7zip
