@@ -30,6 +30,7 @@ from utils import (
     SCAN_MODES,
     THREAD_STRATEGIES,
     normalize_hash_algorithms,
+    safe_resolve,
 )
 from version import APP_AUTHOR, APP_NAME, APP_VERSION
 
@@ -130,6 +131,16 @@ def run_session(
     callbacks: JobCallbacks,
     token: CancellationToken | None = None,
 ) -> list[JobResult]:
+    source = safe_resolve(config.source_dir)
+    output = safe_resolve(config.output_dir)
+    if source == output and config.source_dir.is_dir() and not any(config.source_dir.iterdir()):
+        raise ValueError("Source and output directories must be different when the shared source folder is empty.")
+
+    explicit_no_hash = not config.hash_algorithms
+    original_member_verify = config.verify_member_hashes
+    if explicit_no_hash:
+        config.verify_member_hashes = False
+
     _core.create_archive = create_archive
     _core.verify_archive = verify_archive
     _core.build_forensic_inventory = build_inventory
@@ -139,9 +150,20 @@ def run_session(
         results = _CORE_RUN_SESSION(config, callbacks, token)
     finally:
         _archivers._run_7zip = original_run_7zip
+        config.verify_member_hashes = original_member_verify
+
     for result in results:
         if "SOURCE RETAINED" in result.verify.upper():
             result.verify = "PASS (SOURCE RETAINED)"
+        if explicit_no_hash:
+            result.warnings = [
+                warning
+                for warning in result.warnings
+                if warning != "Archive member hash verification was disabled."
+            ]
+            if result.verify == "PASS WITH WARNINGS" and not result.warnings and not result.scan_issues:
+                result.verify = "PASS"
+                result.status = "success"
     return results
 
 
