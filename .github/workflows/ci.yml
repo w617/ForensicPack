@@ -32,7 +32,13 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Run tests
         working-directory: src
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: src/test-results.xml
 
   quality:
     name: Quality and security checks
@@ -56,7 +62,10 @@ jobs:
         run: python -m mypy src/engine.py src/core_v2.py src/models.py src/sidecars.py
       - name: Static security scan
         working-directory: src
-        run: python -m bandit -r . -x "./test_*.py,./dist,./build" -ll
+        shell: bash
+        run: |
+          find . -type f -name '*.py' ! -name 'test_*.py' ! -path './build/*' ! -path './dist/*' -print0 |
+            xargs -0 python -m bandit -ll
       - name: Dependency audit
         working-directory: src
         run: python -m pip_audit -r requirements-dev.txt
@@ -78,11 +87,15 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Run coverage
         working-directory: src
-        run: python -m pytest --cov=. --cov-report=term-missing --cov-report=xml:coverage.xml
-      - uses: actions/upload-artifact@v4
+        run: python -m pytest --cov=. --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=coverage-test-results.xml
+      - name: Upload coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: src/coverage.xml
+          path: |
+            src/coverage.xml
+            src/coverage-test-results.xml
 
   windows-build:
     name: Windows packaged executable
