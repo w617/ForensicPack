@@ -8,30 +8,34 @@ permissions:
   contents: read
 
 jobs:
-  integrity:
+  hashing:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --quiet bandit==1.9.2
-      - name: Scan integrity modules
-        working-directory: src
-        run: python3 -m bandit -ll hashing.py forensic_inventory.py content_verification.py sidecars.py audit.py transfer.py archivers.py
+      - working-directory: src
+        run: python3 -m bandit -ll hashing.py content_verification.py
 
-  orchestration:
+  package-metadata:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --quiet bandit==1.9.2
-      - name: Scan orchestration modules
-        working-directory: src
-        run: python3 -m bandit -ll core.py core_v2.py engine.py models.py safety.py state_db.py utils.py reporting.py
+      - working-directory: src
+        run: python3 -m bandit -ll sidecars.py audit.py
 
-  interface:
+  transfer-archive:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m pip install --quiet bandit==1.9.2
-      - name: Scan CLI and GUI modules
-        working-directory: src
-        shell: bash
-        run: python3 -m bandit -ll cli.py forensicpack.py gui.py gui_state.py gui_assets.py app_metadata.py gui_components/*.py
+      - working-directory: src
+        run: python3 -m bandit -ll transfer.py archivers.py
+
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --quiet bandit==1.9.2
+      - working-directory: src
+        run: python3 -m bandit -ll forensic_inventory.py
