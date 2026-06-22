@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Virtual environments
+.venv/
+src/.venv-build/
+
+# Build outputs
+src/build/
+src/dist/
+release/windows/
+*.spec.bak
+
+# ForensicPack runtime outputs
+ForensicPack_Report_*
+ForensicPack_Audit_*
+forensicpack_state.db*
+*.partial
+*.partial.*
+tmp_*_manifest.txt
+*.manifest.json
+*.manifest.txt
+*.manifest.json.sig
+*.certificate.pem
+*.sha256
+*.audit.jsonl
+
+# Local test output
+src/TestOutput*/
