@@ -31,6 +31,7 @@ from utils import (
 from version import APP_AUTHOR, APP_NAME, APP_VERSION
 
 _CORE_RUN_SESSION = _core.run_session
+_CORE_VALIDATE_CONFIG = _core.validate_config
 
 
 def _run_7zip(job_id: int, args: list[str], token: CancellationToken, runtime: RuntimeState, callbacks: JobCallbacks) -> bool:
@@ -43,6 +44,29 @@ def _redact_command(cmd: list[str]) -> str:
 
 def _cleanup_cancel_artifacts(output_dir: Path) -> int:
     return _utils.cleanup_cancel_artifacts(Path(output_dir))
+
+
+def _validate_config_allow_same_folder(config: JobConfig) -> None:
+    """Validate normally while permitting source_dir == output_dir.
+
+    Core validation intentionally blocks nested source/output paths to prevent
+    recursive packaging. A shared source/output directory is safe because the
+    session snapshots its immediate children before any temporary archive or
+    report files are created.
+    """
+    source_resolved = _utils.safe_resolve(config.source_dir)
+    output_resolved = _utils.safe_resolve(config.output_dir)
+    if source_resolved != output_resolved:
+        _CORE_VALIDATE_CONFIG(config)
+        return
+
+    original_output = config.output_dir
+    validation_output = source_resolved.parent / f".{source_resolved.name}_forensicpack_validation"
+    config.output_dir = validation_output
+    try:
+        _CORE_VALIDATE_CONFIG(config)
+    finally:
+        config.output_dir = original_output
 
 
 def build_inventory(item_path: Path, job_id: int, token: CancellationToken, callbacks: JobCallbacks, scan_mode: str = "deterministic"):
@@ -96,11 +120,14 @@ def run_session(config: JobConfig, callbacks: JobCallbacks, token: CancellationT
     _core.verify_archive = verify_archive
 
     original_run_7zip = _archivers._run_7zip
+    original_validate_config = _core.validate_config
     _archivers._run_7zip = _run_7zip
+    _core.validate_config = _validate_config_allow_same_folder
     try:
         return _CORE_RUN_SESSION(config, callbacks, token)
     finally:
         _archivers._run_7zip = original_run_7zip
+        _core.validate_config = original_validate_config
 
 
 def process_cases(*args, **kwargs):
