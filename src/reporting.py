@@ -6,6 +6,23 @@ from engine import APP_NAME, APP_VERSION, HASH_NAMES, JobConfig, JobResult
 from models import summarize_job_results
 
 
+_NO_HASH_WARNINGS = {
+    "Archive member hash verification was disabled.",
+    "Archive hash skipped: no hash algorithms selected.",
+}
+
+
+def _normalize_no_hash_results(results: list[JobResult], config: JobConfig) -> None:
+    if config.hash_algorithms:
+        return
+    for result in results:
+        result.warnings = [warning for warning in result.warnings if warning not in _NO_HASH_WARNINGS]
+        result.content_verify = "NOT REQUESTED"
+        if result.verify == "PASS WITH WARNINGS" and not result.warnings and not result.scan_issues:
+            result.verify = "PASS"
+            result.status = "success"
+
+
 def _session_lines(config: JobConfig, sys_info: dict[str, str]) -> list[str]:
     lines = [
         f"Generated  : {dt.datetime.now().isoformat(timespec='seconds')}",
@@ -34,6 +51,7 @@ def _session_lines(config: JobConfig, sys_info: dict[str, str]) -> list[str]:
 
 
 def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sys_info: dict[str, str]) -> None:
+    _normalize_no_hash_results(results, config)
     summary = summarize_job_results(results)
     lines = [f"{APP_NAME} v{APP_VERSION} - Session Report", *_session_lines(config, sys_info)]
     lines.append(
@@ -87,6 +105,7 @@ def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sy
 def write_report_csv(path: Path, results: list[JobResult], config: JobConfig) -> None:
     import csv
 
+    _normalize_no_hash_results(results, config)
     fields = [
         "Case Name",
         "Format",
@@ -141,6 +160,7 @@ def write_report_csv(path: Path, results: list[JobResult], config: JobConfig) ->
 
 
 def write_report_json(path: Path, results: list[JobResult], config: JobConfig, sys_info: dict[str, str]) -> None:
+    _normalize_no_hash_results(results, config)
     payload: dict[str, object] = {
         "schema": "org.forensicpack.session-report/v2",
         "app": {"name": APP_NAME, "version": APP_VERSION},
@@ -172,6 +192,7 @@ def write_report_json(path: Path, results: list[JobResult], config: JobConfig, s
 
 
 def write_report_pdf(path: Path, results: list[JobResult], config: JobConfig, sys_info: dict[str, str]) -> None:
+    _normalize_no_hash_results(results, config)
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import letter
