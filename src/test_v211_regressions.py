@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -73,3 +74,43 @@ def test_same_folder_split_rerun_excludes_every_volume(tmp_path: Path) -> None:
     assert [path.name for path in processable] == ["caseA"]
     excluded_names = {path.name for path in excluded}
     assert {"caseA.7z.001", "caseA.7z.002", "caseA.manifest.json", "caseA.audit.jsonl"} <= excluded_names
+
+
+def test_configured_7zip_path_is_used_during_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    case = source / "caseA"
+    case.mkdir()
+    (case / "evidence.bin").write_bytes(b"evidence")
+    output = tmp_path / "output"
+    configured_path = tmp_path / "portable-7z"
+    configured_path.write_text("placeholder", encoding="utf-8")
+    observed: list[str | None] = []
+
+    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks):
+        if args[0] == "a":
+            targets = [Path(arg) for arg in args[1:] if not str(arg).startswith("-")]
+            targets[0].write_bytes(b"archive")
+            return True
+        if args[0] == "t":
+            observed.append(os.environ.get("FORENSICPACK_7ZIP"))
+            return Path(args[1]).exists()
+        return False
+
+    monkeypatch.setattr(engine, "_run_7zip", fake_run_7zip)
+    original_value = os.environ.get("FORENSICPACK_7ZIP")
+    config = config_for(
+        source,
+        output,
+        archive_fmt="7z",
+        seven_zip_path=configured_path,
+        verify_member_hashes=False,
+    )
+
+    results = engine.run_session(config, callbacks(), CancellationToken())
+
+    assert results[0].verify == "PASS WITH WARNINGS"
+    assert observed == [str(configured_path)]
+    assert os.environ.get("FORENSICPACK_7ZIP") == original_value
