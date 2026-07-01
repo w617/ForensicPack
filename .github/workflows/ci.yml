@@ -67,10 +67,8 @@ jobs:
         working-directory: src
         shell: bash
         run: |
-          # B108 is a false positive on an archive-member name matcher. Actual extraction
-          # uses tempfile.TemporaryDirectory and validates resolved member paths.
           find . -type f -name '*.py' ! -name 'test_*.py' ! -path './build/*' ! -path './dist/*' -print0 |
-            xargs -0 python -m bandit -ll -s B108
+            xargs -0 python -m bandit -ll
       - name: Dependency audit
         working-directory: src
         run: python -m pip_audit -r requirements-dev.txt
