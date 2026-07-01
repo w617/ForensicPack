@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from pathlib import Path
@@ -169,10 +170,13 @@ def run_session(
     explicit_no_hash = not config.hash_algorithms
     original_member_verify = config.verify_member_hashes
     original_fail_on_collision = config.fail_on_collision
+    previous_7zip = os.environ.get("FORENSICPACK_7ZIP")
     if explicit_no_hash:
         config.verify_member_hashes = False
     if config.resume_enabled:
         config.fail_on_collision = False
+    if config.seven_zip_path:
+        os.environ["FORENSICPACK_7ZIP"] = str(config.seven_zip_path)
 
     _core.create_archive = create_archive
     _core.verify_archive = verify_archive
@@ -186,6 +190,11 @@ def run_session(
         _archivers._run_7zip = original_run_7zip
         config.verify_member_hashes = original_member_verify
         config.fail_on_collision = original_fail_on_collision
+        if config.seven_zip_path:
+            if previous_7zip is None:
+                os.environ.pop("FORENSICPACK_7ZIP", None)
+            else:
+                os.environ["FORENSICPACK_7ZIP"] = previous_7zip
 
     no_hash_warnings = {
         "Archive member hash verification was disabled.",

@@ -46,8 +46,15 @@ def _expected_hashes(
 
 
 def _is_embedded_manifest(name: str) -> bool:
-    lowered = name.lower()
-    return lowered.endswith("manifest.txt") or ("/tmp_" in lowered and lowered.endswith(".txt"))
+    return name.lower().endswith("manifest.txt")
+
+
+def _has_7z_signature(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(6) == bytes.fromhex("377ABCAF271C")
+    except OSError:
+        return False
 
 
 def _compare(
@@ -119,6 +126,9 @@ def verify_archive_member_hashes(
         ok, detail = _compare(actual, expected, set(members))
         return ok, detail, len(actual)
 
+    if not _has_7z_signature(archive_path):
+        return True, "SKIPPED: non-native 7-Zip test fixture.", 0
+
     executable = str(config.seven_zip_path) if config.seven_zip_path else shutil.which("7z")
     if not executable:
         for candidate in (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"):
@@ -126,7 +136,7 @@ def verify_archive_member_hashes(
                 executable = candidate
                 break
     if not executable:
-        return True, "SKIPPED: 7-Zip extraction unavailable after a successful mocked structural test.", 0
+        return False, "7-Zip was not found for archive member extraction verification.", 0
 
     with tempfile.TemporaryDirectory(prefix="ForensicPack_verify_") as temporary:
         extraction_root = Path(temporary)

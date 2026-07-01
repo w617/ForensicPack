@@ -66,27 +66,58 @@ def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Pat
         source_name = archive_source_name(item.name)
         if source_name and source_name in sibling_names:
             generated_archives.add(item)
-            if config.archive_fmt == "7z":
-                generated_archives.update(source_dir.glob(f"{item.name}.*"))
+            if item.name.casefold().endswith(".7z.001"):
+                split_base = item.name[:-4]
+                generated_archives.update(source_dir.glob(f"{split_base}.*"))
 
     excluded = obvious_generated | generated_archives
     processable = [item for item in raw_items if item not in excluded]
     return processable, sorted(excluded, key=lambda path: path.name.casefold())
 
 
+def _planned_output_paths(item: Path, config: JobConfig) -> list[Path]:
+    archive = config.output_dir / f"{item.name}{archive_suffix(config.archive_fmt)}"
+    planned = [archive]
+    if config.archive_fmt == "7z" and config.split_enabled:
+        planned.append(archive.with_name(f"{archive.name}.001"))
+
+    stem = config.output_dir / item.name
+    if config.retain_manifests:
+        planned.append(stem.with_name(f"{stem.name}.manifest.txt"))
+    planned.extend(
+        [
+            stem.with_name(f"{stem.name}.manifest.json"),
+            stem.with_name(f"{stem.name}.sha256"),
+        ]
+    )
+    if config.audit_log:
+        planned.append(stem.with_name(f"{stem.name}.audit.jsonl"))
+    if config.signing_key_path:
+        planned.append(stem.with_name(f"{stem.name}.manifest.json.sig"))
+    if config.signing_certificate_path:
+        planned.append(stem.with_name(f"{stem.name}.certificate.pem"))
+    return planned
+
+
 def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]) -> list[str]:
     excluded_resolved = {safe_resolve(path) for path in excluded}
     collisions: list[str] = []
+    seen: set[Path] = set()
     for item in items:
-        target = config.output_dir / f"{item.name}{archive_suffix(config.archive_fmt)}"
-        if not target.exists():
+        planned = _planned_output_paths(item, config)
+        archive_candidates = planned[:2] if config.archive_fmt == "7z" and config.split_enabled else planned[:1]
+        if config.skip_existing and any(path.exists() for path in archive_candidates):
             continue
-        target_resolved = safe_resolve(target)
-        if target_resolved in excluded_resolved:
-            continue
-        if config.skip_existing:
-            continue
-        collisions.append(f"Output already exists and is not a recognized prior ForensicPack output: {target}")
+        for target in planned:
+            target_resolved = safe_resolve(target)
+            if target_resolved in seen or not target.exists():
+                continue
+            seen.add(target_resolved)
+            if target_resolved in excluded_resolved:
+                continue
+            collisions.append(
+                f"Output already exists and is not a recognized prior ForensicPack output: {target}"
+            )
     return collisions
 
 
