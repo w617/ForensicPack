@@ -104,14 +104,16 @@ def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]
     collisions: list[str] = []
     seen: set[Path] = set()
     for item in items:
-        for target in _planned_output_paths(item, config):
+        planned = _planned_output_paths(item, config)
+        archive_candidates = planned[:2] if config.archive_fmt == "7z" and config.split_enabled else planned[:1]
+        if config.skip_existing and any(path.exists() for path in archive_candidates):
+            continue
+        for target in planned:
             target_resolved = safe_resolve(target)
             if target_resolved in seen or not target.exists():
                 continue
             seen.add(target_resolved)
             if target_resolved in excluded_resolved:
-                continue
-            if config.skip_existing and target == _planned_output_paths(item, config)[0]:
                 continue
             collisions.append(
                 f"Output already exists and is not a recognized prior ForensicPack output: {target}"
