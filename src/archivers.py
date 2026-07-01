@@ -227,12 +227,23 @@ def verify_archive(
     callbacks: JobCallbacks,
     job_id: int | None = None,
     token: CancellationToken | None = None,
+    seven_zip_path: str | Path | None = None,
 ) -> bool:
     callbacks.log_cb(f"  Verifying integrity of {archive_path.name} ...", "#8b949e")
     if archive_fmt == "7z":
         if token is None or job_id is None:
             raise ValueError("7z verification requires job context.")
-        return _run_7zip(job_id, ["t", str(archive_path)], token, RuntimeState(), callbacks)
+        previous_7zip = os.environ.get("FORENSICPACK_7ZIP")
+        if seven_zip_path:
+            os.environ["FORENSICPACK_7ZIP"] = str(seven_zip_path)
+        try:
+            return _run_7zip(job_id, ["t", str(archive_path)], token, RuntimeState(), callbacks)
+        finally:
+            if seven_zip_path:
+                if previous_7zip is None:
+                    os.environ.pop("FORENSICPACK_7ZIP", None)
+                else:
+                    os.environ["FORENSICPACK_7ZIP"] = previous_7zip
     if archive_fmt == "ZIP":
         with zipfile.ZipFile(archive_path, "r") as archive:
             bad_member = archive.testzip()
