@@ -1,6 +1,6 @@
 # ForensicPack v2.1.1
 
-ForensicPack v2.1.1 is a maintenance and evidence-safety release for the v2.1 package workflow.
+ForensicPack v2.1.1 is a maintenance and evidence-safety release for the v2.1 package workflow. It supersedes v2.1.0 for new installations and upgrades.
 
 ## Fixed
 
