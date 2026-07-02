@@ -19,8 +19,14 @@ _GENERATED_PATTERNS = (
     "tmp_*_manifest.txt",
     "*.partial",
     "*.partial.*",
+    "manifest.json",
+    "manifest.txt",
+    "audit.json",
+    "audit.jsonl",
+    ".sha256",
     "*.manifest.json",
     "*.manifest.txt",
+    "*.audit.json",
     "*.audit.jsonl",
     "*.sha256",
     "*.sig",
@@ -51,8 +57,9 @@ def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Pat
     """Return (processable, generated/excluded) immediate source children.
 
     A prior archive is considered generated only when its archive basename maps
-    to another sibling source item. Standalone archive evidence remains eligible
-    for packaging.
+    to another sibling source item. Generated manifests, audit files, checksum
+    sidecars, reports, and state files are excluded unconditionally unless the
+    caller explicitly disables generated-output filtering.
     """
     raw_items = sorted(source_dir.iterdir(), key=lambda path: path.name.casefold())
     if not config.exclude_generated_outputs:
