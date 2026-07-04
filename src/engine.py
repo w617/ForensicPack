@@ -58,25 +58,28 @@ def _cleanup_cancel_artifacts(output_dir: Path) -> int:
 
 
 def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Path], list[Path]]:
-    """Refine broad generated-file filtering using sibling source names."""
+    """Exclude generated derivatives while preserving unrelated PEM/SIG evidence."""
     processable, excluded = _safety.classify_source_items(source_dir, config)
-    sibling_names = {path.name for path in source_dir.iterdir()}
     restored: list[Path] = []
-    generated_suffixes = (
+    derivative_suffixes = (
         ".manifest.json.sig",
         ".certificate.pem",
         ".manifest.json",
         ".manifest.txt",
+        ".audit.json",
         ".audit.jsonl",
         ".sha256",
     )
+    derivative_names = {
+        "manifest.json",
+        "manifest.txt",
+        "audit.json",
+        "audit.jsonl",
+        ".sha256",
+    }
     for path in excluded:
         lowered = path.name.casefold()
-        matched_suffix = next((suffix for suffix in generated_suffixes if lowered.endswith(suffix)), None)
-        if matched_suffix:
-            source_name = path.name[: -len(matched_suffix)]
-            if source_name not in sibling_names:
-                restored.append(path)
+        if lowered in derivative_names or lowered.endswith(derivative_suffixes):
             continue
         if lowered.endswith(".pem") or lowered.endswith(".sig"):
             restored.append(path)
