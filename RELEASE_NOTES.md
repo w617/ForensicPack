@@ -1,6 +1,6 @@
 # ForensicPack v2.1.3
 
-ForensicPack v2.1.3 is a destination-folder cleanup release.
+ForensicPack v2.1.3 is a destination-folder cleanup release. It supersedes v2.1.2 for users who want a clean delivery folder.
 
 ## Fixed
 
