@@ -1,12 +1,13 @@
 import datetime as dt
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
 from hashing import hash_file
 from models import FileRecord, JobConfig, ScanIssue
-from utils import split_output_parts
+from utils import metadata_output_dir, split_output_parts
 from version import APP_NAME, APP_VERSION
 
 
@@ -32,6 +33,11 @@ def _sign_manifest(manifest_path: Path, key_path: Path, signature_path: Path) ->
     signature_path.write_bytes(signature)
 
 
+def _checksum_name(target: Path, checksum_dir: Path) -> str:
+    relative = os.path.relpath(target, checksum_dir)
+    return Path(relative).as_posix()
+
+
 def write_package_sidecars(
     item_path: Path,
     base_archive: Path,
@@ -44,7 +50,9 @@ def write_package_sidecars(
     audit_log_path: Path | None,
     audit_final_hash: str,
 ) -> dict[str, str]:
-    stem = config.output_dir / item_path.name
+    metadata_dir = metadata_output_dir(config.output_dir)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    stem = metadata_dir / item_path.name
     text_manifest_path = stem.with_name(f"{stem.name}.manifest.txt")
     json_manifest_path = stem.with_name(f"{stem.name}.manifest.json")
     checksum_path = stem.with_name(f"{stem.name}.sha256")
@@ -94,7 +102,7 @@ def write_package_sidecars(
     checksum_lines = []
     for target in checksum_targets:
         digest = hash_file(target, ["SHA256"])["SHA256"]
-        checksum_lines.append(f"{digest} *{target.name}")
+        checksum_lines.append(f"{digest} *{_checksum_name(target, checksum_path.parent)}")
     checksum_path.write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
 
     signature_value = ""
