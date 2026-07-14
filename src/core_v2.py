@@ -35,6 +35,7 @@ from utils import (
     cleanup_partial_outputs,
     expected_archive_path,
     is_relative_to,
+    metadata_output_dir,
     normalize_hash_algorithms,
     output_size_bytes,
     rename_matching_outputs,
@@ -132,8 +133,10 @@ def validate_config(config: JobConfig) -> None:
 
 
 def report_paths(output_dir: Path) -> tuple[Path, Path, Path, Path]:
+    metadata_dir = metadata_output_dir(output_dir)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = output_dir / f"ForensicPack_Report_{stamp}"
+    stem = metadata_dir / f"ForensicPack_Report_{stamp}"
     return (
         stem.with_suffix(".txt"),
         stem.with_suffix(".csv"),
@@ -170,6 +173,8 @@ def _process_single_item(
     result.start_time = _now_iso()
     terminal_state: str | None = None
 
+    metadata_dir = metadata_output_dir(config.output_dir)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
     expected_archive = expected_archive_path(item_path, config.output_dir, config.archive_fmt)
     existing_verify_path = split_entry_path(expected_archive, config)
     if config.skip_existing and existing_verify_path.exists():
@@ -190,11 +195,11 @@ def _process_single_item(
     callbacks.log_cb(f"  [START] {item_path.name}", "#58a6ff")
 
     final_manifest_name = f"{item_path.name}.manifest.txt"
-    temp_manifest = config.output_dir / f"tmp_{job_id}_{item_path.name}_manifest.txt"
+    temp_manifest = metadata_dir / f"tmp_{job_id}_{item_path.name}_manifest.txt"
     temp_archive = config.output_dir / f"{item_path.name}{archive_suffix(config.archive_fmt)}.partial"
     temp_verify_path = split_entry_path(temp_archive, config)
     final_verify_path = split_entry_path(expected_archive, config)
-    item_audit_path = config.output_dir / f"{item_path.name}.audit.jsonl"
+    item_audit_path = metadata_dir / f"{item_path.name}.audit.jsonl"
     audit = AuditLogger(item_audit_path, enabled=config.audit_log)
     result.audit_log_path = str(item_audit_path) if config.audit_log else ""
 
@@ -234,13 +239,13 @@ def _process_single_item(
                 item_path,
                 "manifested",
                 verify="IN_PROGRESS",
-                manifest_path=final_manifest_name,
+                manifest_path=str(metadata_dir / final_manifest_name),
                 file_count=file_count,
                 source_size=source_size,
             )
 
         if config.dry_run:
-            retained = config.output_dir / final_manifest_name
+            retained = metadata_dir / final_manifest_name
             if config.retain_manifests:
                 shutil.copy2(temp_manifest, retained)
                 result.manifest_path = str(retained)
@@ -424,6 +429,7 @@ def run_session(
     runtime = RuntimeState()
     callbacks.progress_interval_ms = config.progress_interval_ms
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_output_dir(config.output_dir).mkdir(parents=True, exist_ok=True)
 
     def force_cleanup() -> None:
         runtime.kill_all()
@@ -562,6 +568,7 @@ def run_verify_session(
     verify_input = Path(verify_input)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_output_dir(output_dir).mkdir(parents=True, exist_ok=True)
     algorithms = normalize_hash_algorithms(hash_algorithms or ["SHA256"])
     targets = _discover_verify_targets(verify_input)
     if not targets:
@@ -596,8 +603,12 @@ def run_verify_session(
                 if source_name.lower().endswith(suffix):
                     source_name = source_name[: -len(suffix)]
                     break
-            checksum = path.parent / f"{source_name}.sha256"
-            if checksum.is_file():
+            checksum_candidates = [
+                path.parent / f"{source_name}.sha256",
+                metadata_output_dir(path.parent) / f"{source_name}.sha256",
+            ]
+            checksum = next((candidate for candidate in checksum_candidates if candidate.is_file()), None)
+            if checksum is not None:
                 checksum_ok, issues = verify_checksum_file(checksum)
                 if not checksum_ok:
                     result.status = "failed"

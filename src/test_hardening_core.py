@@ -3,6 +3,7 @@ from pathlib import Path
 import engine
 from models import CancellationToken, JobCallbacks, JobConfig
 from sidecars import verify_checksum_file
+from utils import METADATA_DIR_NAME
 
 
 def callbacks() -> JobCallbacks:
@@ -71,4 +72,5 @@ def test_pdf_report_is_created_when_enabled(tmp_path: Path) -> None:
         config_for(source, output, report_pdf=True), callbacks(), CancellationToken()
     )
     assert results[0].verify == "PASS"
-    assert list(output.glob("ForensicPack_Report_*.pdf"))
+    assert not list(output.glob("ForensicPack_Report_*.pdf"))
+    assert list((output / METADATA_DIR_NAME).glob("ForensicPack_Report_*.pdf"))
