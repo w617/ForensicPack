@@ -52,7 +52,7 @@ def test_unrelated_archive_collision_still_fails_before_overwrite(tmp_path: Path
     assert protected.read_text(encoding="utf-8") == "unrelated-existing-content"
 
 
-def test_managed_application_metadata_is_refreshed_on_rerun(tmp_path: Path) -> None:
+def test_managed_application_metadata_is_refreshed_on_rebuild(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "case.txt").write_text("evidence", encoding="utf-8")
@@ -61,9 +61,13 @@ def test_managed_application_metadata_is_refreshed_on_rerun(tmp_path: Path) -> N
 
     first = engine.run_session(config, callbacks(), CancellationToken())
     assert first[0].verify == "PASS"
+    archive = output / "case.txt.zip"
     manifest = metadata_output_dir(output) / "case.txt.manifest.json"
     manifest.write_text("sentinel", encoding="utf-8")
 
+    # A rebuild must be explicit: remove the prior deliverable while retaining
+    # the managed metadata workspace that ForensicPack is expected to refresh.
+    archive.unlink()
     second = engine.run_session(config, callbacks(), CancellationToken())
 
     assert second[0].verify == "PASS"
