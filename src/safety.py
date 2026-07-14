@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from models import JobConfig
-from utils import METADATA_DIR_NAME, archive_suffix, metadata_output_dir, safe_resolve
+from utils import METADATA_DIR_NAME, archive_suffix, is_relative_to, metadata_output_dir, safe_resolve
 
 
 _GENERATED_PATTERNS = (
@@ -109,6 +109,14 @@ def _planned_output_paths(item: Path, config: JobConfig) -> list[Path]:
     return planned
 
 
+def _is_under_excluded_generated_path(target: Path, excluded_resolved: set[Path]) -> bool:
+    target_resolved = safe_resolve(target)
+    return any(
+        target_resolved == excluded or is_relative_to(target_resolved, excluded)
+        for excluded in excluded_resolved
+    )
+
+
 def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]) -> list[str]:
     excluded_resolved = {safe_resolve(path) for path in excluded}
     collisions: list[str] = []
@@ -123,7 +131,7 @@ def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]
             if target_resolved in seen or not target.exists():
                 continue
             seen.add(target_resolved)
-            if target_resolved in excluded_resolved:
+            if _is_under_excluded_generated_path(target, excluded_resolved):
                 continue
             collisions.append(
                 f"Output already exists and is not a recognized prior ForensicPack output: {target}"
