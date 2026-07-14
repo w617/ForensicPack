@@ -194,10 +194,9 @@ def rename_matching_outputs(temp_archive: Path, final_archive: Path) -> None:
         path.replace(target)
 
 
-def cleanup_partial_outputs(output_dir: Path, temp_archive: Path | None = None) -> None:
-    targets = [temp_archive, *(temp_archive.parent.glob(temp_archive.name + ".*") if temp_archive else [])]
-    for path in targets:
-        if path and path.exists():
+def cleanup_partial_outputs(temp_archive: Path) -> None:
+    for path in [temp_archive, *temp_archive.parent.glob(temp_archive.name + ".*")]:
+        if path.exists():
             try:
                 path.unlink()
             except OSError:
