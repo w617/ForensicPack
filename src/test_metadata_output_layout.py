@@ -43,7 +43,7 @@ def test_destination_root_contains_archive_and_metadata_folder_only(tmp_path: Pa
 
     results = engine.run_session(config_for(source, output), callbacks(), CancellationToken())
 
-    assert results[0].verify == "PASS WITH WARNINGS"
+    assert results[0].verify == "PASS"
     root_names = {path.name for path in output.iterdir()}
     assert root_names == {"Case Files.zip", METADATA_DIR_NAME}
     assert not list(output.glob("*.audit.jsonl"))
