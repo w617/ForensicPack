@@ -4,10 +4,11 @@ import shutil
 from pathlib import Path
 
 from models import JobConfig
-from utils import archive_suffix, safe_resolve
+from utils import METADATA_DIR_NAME, archive_suffix, metadata_output_dir, safe_resolve
 
 
 _GENERATED_PATTERNS = (
+    METADATA_DIR_NAME,
     "ForensicPack_Report_*.txt",
     "ForensicPack_Report_*.csv",
     "ForensicPack_Report_*.json",
@@ -58,8 +59,9 @@ def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Pat
 
     A prior archive is considered generated only when its archive basename maps
     to another sibling source item. Generated manifests, audit files, checksum
-    sidecars, reports, and state files are excluded unconditionally unless the
-    caller explicitly disables generated-output filtering.
+    sidecars, reports, metadata folders, and state files are excluded
+    unconditionally unless the caller explicitly disables generated-output
+    filtering.
     """
     raw_items = sorted(source_dir.iterdir(), key=lambda path: path.name.casefold())
     if not config.exclude_generated_outputs:
@@ -84,11 +86,12 @@ def classify_source_items(source_dir: Path, config: JobConfig) -> tuple[list[Pat
 
 def _planned_output_paths(item: Path, config: JobConfig) -> list[Path]:
     archive = config.output_dir / f"{item.name}{archive_suffix(config.archive_fmt)}"
+    metadata_dir = metadata_output_dir(config.output_dir)
     planned = [archive]
     if config.archive_fmt == "7z" and config.split_enabled:
         planned.append(archive.with_name(f"{archive.name}.001"))
 
-    stem = config.output_dir / item.name
+    stem = metadata_dir / item.name
     if config.retain_manifests:
         planned.append(stem.with_name(f"{stem.name}.manifest.txt"))
     planned.extend(
