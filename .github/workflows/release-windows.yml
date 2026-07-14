@@ -1,6 +1,6 @@
 name: Release Windows EXE
 
-# Version-file changes on main publish the corresponding release automatically.
+# Version or release-note changes on main publish the corresponding release automatically.
 on:
   push:
     branches:
