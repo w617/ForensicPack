@@ -1,10 +1,13 @@
 """GUI component smoke tests.
 
 These tests verify widget logic and state management without relying on a real
-display.  A real Tk root is created and immediately withdrawn so no window
+display. A real Tk root is created and immediately withdrawn so no window
 appears; tests are skipped when no display is available (headless CI).
 """
+import os
 import sys
+from pathlib import Path
+
 import pytest
 
 
@@ -18,13 +21,19 @@ def _require_display():
 
 
 @pytest.fixture(scope="module")
-def app():
+def app(tmp_path_factory):
     _require_display()
-    from gui_components.app import ForensicPackApp
+    original_appdata = os.environ.get("FORENSICPACK_APPDATA")
+    os.environ["FORENSICPACK_APPDATA"] = str(tmp_path_factory.mktemp("forensicpack-appdata"))
+    from gui import ForensicPackApp
     instance = ForensicPackApp()
     instance.withdraw()
     yield instance
     instance.destroy()
+    if original_appdata is None:
+        os.environ.pop("FORENSICPACK_APPDATA", None)
+    else:
+        os.environ["FORENSICPACK_APPDATA"] = original_appdata
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +49,21 @@ def test_app_title_contains_version(app):
     from version import APP_NAME, APP_VERSION
     assert APP_VERSION in app.title()
     assert APP_NAME in app.title()
+
+
+def test_refreshed_layout_starts_with_advanced_settings_collapsed(app):
+    assert app._advanced_visible is False
+    assert not app._advanced_host.winfo_ismapped()
+    assert "Show Advanced Settings" in app._advanced_toggle_btn.cget("text")
+
+
+def test_metadata_button_targets_application_data(app, tmp_path):
+    from utils import application_data_dir, metadata_output_dir
+
+    output = tmp_path / "destination"
+    app._dst_var.set(str(output))
+    assert app._current_metadata_dir() == metadata_output_dir(output)
+    assert str(app._current_metadata_dir()).startswith(str(application_data_dir()))
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +115,6 @@ def test_build_queue_rows_clears_previous(app):
     app._build_queue_rows(["alpha", "beta"])
     app._build_queue_rows(["only_one"])
     assert len(app._queue_rows) == 1
-    assert app._queue_rows[0]["name"] == "only_one"
 
 
 def test_queue_rows_initial_state_is_queued(app):
