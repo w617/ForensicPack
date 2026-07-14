@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 
@@ -9,6 +11,13 @@ _POLICY_XFAILS = {
         "v2.1 reports broken symlink/reparse-point omissions as a warning result."
     ),
 }
+
+
+@pytest.fixture(autouse=True)
+def isolated_forensicpack_appdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORENSICPACK_APPDATA", str(tmp_path / "ForensicPackAppData"))
 
 
 def pytest_collection_modifyitems(items):
