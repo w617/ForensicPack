@@ -2,7 +2,7 @@ from pathlib import Path
 
 APP_NAME = "ForensicPack"
 APP_AUTHOR = "github.com/w617"
-_DEFAULT_VERSION = "2.1.3"
+_DEFAULT_VERSION = "2.2.0"
 
 try:
     APP_VERSION = Path(__file__).with_name("release_version.txt").read_text(encoding="utf-8").strip()
