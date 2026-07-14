@@ -5,8 +5,6 @@ display. A real Tk root is created and immediately withdrawn so no window
 appears; tests are skipped when no display is available (headless CI).
 """
 import os
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -36,12 +34,7 @@ def app(tmp_path_factory):
         os.environ["FORENSICPACK_APPDATA"] = original_appdata
 
 
-# ---------------------------------------------------------------------------
-# Startup / initialisation
-# ---------------------------------------------------------------------------
-
 def test_app_creates_without_error(app):
-    """ForensicPackApp must initialise without raising."""
     assert app is not None
 
 
@@ -66,10 +59,6 @@ def test_metadata_button_targets_application_data(app, tmp_path):
     assert str(app._current_metadata_dir()).startswith(str(application_data_dir()))
 
 
-# ---------------------------------------------------------------------------
-# Settings round-trip
-# ---------------------------------------------------------------------------
-
 def test_collect_settings_payload_has_required_keys(app):
     payload = app._collect_settings_payload()
     required = {
@@ -84,10 +73,6 @@ def test_apply_settings_to_controls_does_not_raise(app):
     app._apply_settings_to_controls(settings)
 
 
-# ---------------------------------------------------------------------------
-# Mode switching
-# ---------------------------------------------------------------------------
-
 def test_mode_switch_pack_to_verify(app):
     app._run_mode_var.set("verify")
     app._apply_mode_state()
@@ -99,10 +84,6 @@ def test_mode_switch_verify_to_pack(app):
     app._apply_mode_state()
     assert app._start_btn.cget("text") == "Start Processing"
 
-
-# ---------------------------------------------------------------------------
-# Queue panel
-# ---------------------------------------------------------------------------
 
 def test_build_queue_rows_populates_rows(app):
     app._build_queue_rows(["case_001", "case_002", "case_003"])
@@ -150,10 +131,6 @@ def test_queue_filter_all_shows_all_rows(app):
     assert len(visible) == 3
 
 
-# ---------------------------------------------------------------------------
-# Log panel
-# ---------------------------------------------------------------------------
-
 def test_log_write_and_clear(app):
     app._log_write("test message", "#ffffff")
     content = app._log.get("1.0", "end-1c")
@@ -169,10 +146,6 @@ def test_save_log_reports_empty_on_blank_log(app, monkeypatch):
     app._save_log()
     assert any("empty" in str(m).lower() or "nothing" in str(m).lower() for m in shown)
 
-
-# ---------------------------------------------------------------------------
-# Diagnostic snapshot
-# ---------------------------------------------------------------------------
 
 def test_build_diagnostic_snapshot_contains_version(app):
     from version import APP_VERSION
