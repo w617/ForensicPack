@@ -22,7 +22,7 @@ def config_for(source: Path, **overrides) -> JobConfig:
     return JobConfig(**values)
 
 
-def test_derivative_manifests_audits_and_checksums_are_always_excluded(tmp_path: Path) -> None:
+def test_derivative_manifests_audits_checksums_and_reports_are_excluded(tmp_path: Path) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "caseA").mkdir()
@@ -41,11 +41,18 @@ def test_derivative_manifests_audits_and_checksums_are_always_excluded(tmp_path:
         "audit.json",
         "audit.jsonl",
         ".sha256",
+        "Case Files.audit.jsonl",
+        "Dependencies.audit.jsonl",
+        "ExportSummary.json.audit.jsonl",
+        "OpenCase.exe.audit.jsonl",
+        "Portable Case Quick Start Guide.pdf.audit.jsonl",
+        "ForensicPack_Report_20260714_100624.csv",
+        "ForensicPack_Report_20260714_100624.txt",
     }
     for name in derivative_names:
         (evidence / name).write_text("generated", encoding="utf-8")
 
-    # Unrelated evidence with similar cryptographic extensions remains eligible.
+    # Unrelated evidence with similar extensions remains eligible.
     (evidence / "submitted-certificate.pem").write_text("evidence", encoding="utf-8")
     (evidence / "detached-signature.sig").write_text("evidence", encoding="utf-8")
     (evidence / "notes.json").write_text("evidence", encoding="utf-8")
@@ -67,6 +74,8 @@ def test_include_generated_outputs_override_remains_available(tmp_path: Path) ->
         "caseA.audit.json",
         "caseA.audit.jsonl",
         "caseA.sha256",
+        "Case Files.audit.jsonl",
+        "ForensicPack_Report_20260714_100624.csv",
     }
     for name in generated:
         (evidence / name).write_text("generated", encoding="utf-8")
