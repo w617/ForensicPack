@@ -5,6 +5,7 @@ import pytest
 
 import engine
 from models import CancellationToken, JobCallbacks, JobConfig
+from utils import METADATA_DIR_NAME
 
 
 def callbacks() -> JobCallbacks:
@@ -40,8 +41,9 @@ def test_unrelated_sidecar_collision_fails_before_overwrite(tmp_path: Path) -> N
     source.mkdir()
     (source / "case.txt").write_text("evidence", encoding="utf-8")
     output = tmp_path / "output"
-    output.mkdir()
-    protected = output / "case.txt.manifest.json"
+    metadata = output / METADATA_DIR_NAME
+    metadata.mkdir(parents=True)
+    protected = metadata / "case.txt.manifest.json"
     protected.write_text("unrelated-existing-content", encoding="utf-8")
 
     with pytest.raises(ValueError, match="case.txt.manifest.json"):
