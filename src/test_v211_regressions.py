@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import pytest
 
 import engine
 from models import CancellationToken, JobCallbacks, JobConfig
-from utils import METADATA_DIR_NAME
+from utils import metadata_output_dir
 
 
 def callbacks() -> JobCallbacks:
@@ -36,21 +37,39 @@ def config_for(source: Path, output: Path, **overrides) -> JobConfig:
     return JobConfig(**values)
 
 
-def test_unrelated_sidecar_collision_fails_before_overwrite(tmp_path: Path) -> None:
+def test_unrelated_archive_collision_still_fails_before_overwrite(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "case.txt").write_text("evidence", encoding="utf-8")
     output = tmp_path / "output"
-    metadata = output / METADATA_DIR_NAME
-    metadata.mkdir(parents=True)
-    protected = metadata / "case.txt.manifest.json"
+    output.mkdir()
+    protected = output / "case.txt.zip"
     protected.write_text("unrelated-existing-content", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="case.txt.manifest.json"):
+    with pytest.raises(ValueError, match="case.txt.zip"):
         engine.run_session(config_for(source, output), callbacks(), CancellationToken())
 
     assert protected.read_text(encoding="utf-8") == "unrelated-existing-content"
-    assert not (output / "case.txt.zip").exists()
+
+
+def test_managed_application_metadata_is_refreshed_on_rerun(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "case.txt").write_text("evidence", encoding="utf-8")
+    output = tmp_path / "output"
+    config = config_for(source, output)
+
+    first = engine.run_session(config, callbacks(), CancellationToken())
+    assert first[0].verify == "PASS"
+    manifest = metadata_output_dir(output) / "case.txt.manifest.json"
+    manifest.write_text("sentinel", encoding="utf-8")
+
+    second = engine.run_session(config, callbacks(), CancellationToken())
+
+    assert second[0].verify == "PASS"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["case_name"] == "case.txt"
+    assert {path.name for path in output.iterdir()} == {"case.txt.zip"}
 
 
 def test_same_folder_split_rerun_excludes_every_volume(tmp_path: Path) -> None:
