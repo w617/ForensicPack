@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import pytest
+
 import engine
 from models import CancellationToken, JobCallbacks, JobConfig
 from sidecars import verify_checksum_file
-from utils import METADATA_DIR_NAME
+from utils import metadata_output_dir
 
 
 def callbacks() -> JobCallbacks:
@@ -34,7 +36,10 @@ def config_for(source: Path, output: Path, **overrides) -> JobConfig:
     return JobConfig(**values)
 
 
-def test_same_folder_rerun_excludes_prior_outputs(tmp_path: Path) -> None:
+def test_same_folder_rerun_excludes_prior_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORENSICPACK_APPDATA", str(tmp_path / "appdata"))
     source = tmp_path / "evidence"
     source.mkdir()
     (source / "document.txt").write_text("evidence", encoding="utf-8")
@@ -51,7 +56,10 @@ def test_same_folder_rerun_excludes_prior_outputs(tmp_path: Path) -> None:
     assert "document.txt.zip" in config.excluded_generated_items
 
 
-def test_package_checksum_sidecar_verifies(tmp_path: Path) -> None:
+def test_package_checksum_sidecar_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORENSICPACK_APPDATA", str(tmp_path / "appdata"))
     source = tmp_path / "source"
     source.mkdir()
     (source / "one.bin").write_bytes(b"one" * 4096)
@@ -63,7 +71,10 @@ def test_package_checksum_sidecar_verifies(tmp_path: Path) -> None:
     assert issues == []
 
 
-def test_pdf_report_is_created_when_enabled(tmp_path: Path) -> None:
+def test_pdf_report_is_created_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORENSICPACK_APPDATA", str(tmp_path / "appdata"))
     source = tmp_path / "source"
     source.mkdir()
     (source / "evidence.txt").write_text("evidence", encoding="utf-8")
@@ -73,4 +84,4 @@ def test_pdf_report_is_created_when_enabled(tmp_path: Path) -> None:
     )
     assert results[0].verify == "PASS"
     assert not list(output.glob("ForensicPack_Report_*.pdf"))
-    assert list((output / METADATA_DIR_NAME).glob("ForensicPack_Report_*.pdf"))
+    assert list(metadata_output_dir(output).glob("ForensicPack_Report_*.pdf"))

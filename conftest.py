@@ -24,7 +24,7 @@ def pytest_collection_modifyitems(items):
         if item.name in _METADATA_LAYOUT_TARGETS:
             item.add_marker(
                 pytest.mark.xfail(
-                    reason="v2.1.3 writes session reports inside _ForensicPack_Metadata instead of the destination root.",
+                    reason="v2.2 stores session reports in private ForensicPack application data instead of the destination root.",
                     strict=False,
                 )
             )

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import socket
 from pathlib import Path
 from typing import Callable
@@ -22,7 +23,8 @@ COMPRESSION_LEVELS = {
 ARCHIVE_HASH_MODES = ["always", "skip"]
 SCAN_MODES = ["deterministic", "fast"]
 THREAD_STRATEGIES = ["fixed", "auto"]
-METADATA_DIR_NAME = "_ForensicPack_Metadata"
+APP_DATA_DIR_NAME = "ForensicPack"
+METADATA_DIR_NAME = "_ForensicPack_Metadata"  # Legacy destination-folder name; still excluded as generated.
 
 
 def normalize_hash_name(value: str) -> str:
@@ -57,8 +59,37 @@ def is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
+def application_data_dir() -> Path:
+    """Return ForensicPack's private per-user application-data directory.
+
+    FORENSICPACK_APPDATA is supported for managed deployments and isolated tests.
+    """
+    override = os.getenv("FORENSICPACK_APPDATA", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        local_appdata = os.getenv("LOCALAPPDATA")
+        base = Path(local_appdata) if local_appdata else (Path.home() / "AppData" / "Local")
+        return base / APP_DATA_DIR_NAME
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DATA_DIR_NAME
+    xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+    base = Path(xdg_data_home).expanduser() if xdg_data_home else (Path.home() / ".local" / "share")
+    return base / APP_DATA_DIR_NAME
+
+
+def _safe_workspace_label(output_dir: Path) -> str:
+    name = safe_resolve(output_dir).name or "destination"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")
+    return (cleaned or "destination")[:48]
+
+
 def metadata_output_dir(output_dir: Path) -> Path:
-    return output_dir / METADATA_DIR_NAME
+    """Return the private metadata workspace associated with an output directory."""
+    resolved = safe_resolve(output_dir)
+    normalized = str(resolved).casefold() if os.name == "nt" else str(resolved)
+    digest = hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+    return application_data_dir() / "Cases" / f"{_safe_workspace_label(resolved)}-{digest}"
 
 
 def archive_suffix(fmt: str) -> str:
@@ -127,7 +158,7 @@ def redact_command(cmd: list[str]) -> str:
 def resolve_state_db_path(config: JobConfig) -> Path:
     if config.state_db_path:
         return config.state_db_path
-    return metadata_output_dir(config.output_dir) / "forensicpack_state.db"
+    return application_data_dir() / "forensicpack_state.db"
 
 
 def session_profile_key(config: JobConfig) -> str:

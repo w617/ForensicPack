@@ -117,7 +117,19 @@ def _is_under_excluded_generated_path(target: Path, excluded_resolved: set[Path]
     )
 
 
+def _is_managed_metadata_path(target: Path, config: JobConfig) -> bool:
+    target_resolved = safe_resolve(target)
+    metadata_root = safe_resolve(metadata_output_dir(config.output_dir))
+    return target_resolved == metadata_root or is_relative_to(target_resolved, metadata_root)
+
+
 def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]) -> list[str]:
+    """Return only collisions that could overwrite an unrelated deliverable.
+
+    Files inside the private per-destination metadata workspace are owned by
+    ForensicPack and are intentionally refreshed on a rerun. Archive files in
+    the selected destination remain protected from accidental overwrite.
+    """
     excluded_resolved = {safe_resolve(path) for path in excluded}
     collisions: list[str] = []
     seen: set[Path] = set()
@@ -131,6 +143,8 @@ def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]
             if target_resolved in seen or not target.exists():
                 continue
             seen.add(target_resolved)
+            if _is_managed_metadata_path(target, config):
+                continue
             if _is_under_excluded_generated_path(target, excluded_resolved):
                 continue
             collisions.append(
