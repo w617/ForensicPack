@@ -4,7 +4,7 @@ import pytest
 
 import engine
 from models import CancellationToken, JobCallbacks, JobConfig
-from sidecars import verify_checksum_file
+from sidecars import _checksum_name, verify_checksum_file
 from utils import METADATA_DIR_NAME, application_data_dir, metadata_output_dir, resolve_state_db_path
 
 
@@ -108,3 +108,17 @@ def test_legacy_metadata_folder_is_excluded_on_same_folder_rerun(tmp_path: Path)
 
     assert [path.name for path in processable] == ["Case Files"]
     assert METADATA_DIR_NAME in {path.name for path in excluded}
+
+
+def test_checksum_name_falls_back_to_absolute_path_across_windows_drives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "destination" / "Case Files.zip"
+    checksum_dir = tmp_path / "appdata" / "Cases" / "destination-abc123"
+
+    def fake_relpath(_target, _start):
+        raise ValueError("path is on mount 'G:', start on mount 'C:'")
+
+    monkeypatch.setattr("sidecars.os.path.relpath", fake_relpath)
+
+    assert _checksum_name(target, checksum_dir) == target.as_posix()
