@@ -34,7 +34,10 @@ def _sign_manifest(manifest_path: Path, key_path: Path, signature_path: Path) ->
 
 
 def _checksum_name(target: Path, checksum_dir: Path) -> str:
-    relative = os.path.relpath(target, checksum_dir)
+    try:
+        relative = os.path.relpath(target, checksum_dir)
+    except ValueError:
+        relative = str(target)
     return Path(relative).as_posix()
 
 
