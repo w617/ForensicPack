@@ -1,4 +1,5 @@
 import fnmatch
+import json
 import os
 import shutil
 from pathlib import Path
@@ -123,6 +124,26 @@ def _is_managed_metadata_path(target: Path, config: JobConfig) -> bool:
     return target_resolved == metadata_root or is_relative_to(target_resolved, metadata_root)
 
 
+def _is_recognized_prior_archive(item: Path, target: Path, config: JobConfig) -> bool:
+    manifest_path = metadata_output_dir(config.output_dir) / f"{item.name}.manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if payload.get("schema") != "org.forensicpack.package-manifest/v1":
+        return False
+    if payload.get("case_name") != item.name:
+        return False
+    if payload.get("archive_format") != config.archive_fmt:
+        return False
+    archive_parts = payload.get("archive_parts")
+    if not isinstance(archive_parts, dict):
+        return False
+    return target.name in archive_parts
+
+
 def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]) -> list[str]:
     """Return only collisions that could overwrite an unrelated deliverable.
 
@@ -144,6 +165,8 @@ def output_collisions(items: list[Path], config: JobConfig, excluded: list[Path]
                 continue
             seen.add(target_resolved)
             if _is_managed_metadata_path(target, config):
+                continue
+            if target in archive_candidates and _is_recognized_prior_archive(item, target, config):
                 continue
             if _is_under_excluded_generated_path(target, excluded_resolved):
                 continue
