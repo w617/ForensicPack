@@ -52,6 +52,21 @@ def test_unrelated_archive_collision_still_fails_before_overwrite(tmp_path: Path
     assert protected.read_text(encoding="utf-8") == "unrelated-existing-content"
 
 
+def test_prior_forensicpack_archive_is_recognized_on_rebuild(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "case.txt").write_text("evidence", encoding="utf-8")
+    output = tmp_path / "output"
+    config = config_for(source, output)
+
+    first = engine.run_session(config, callbacks(), CancellationToken())
+    second = engine.run_session(config, callbacks(), CancellationToken())
+
+    assert first[0].verify == "PASS"
+    assert second[0].verify == "PASS"
+    assert (output / "case.txt.zip").is_file()
+
+
 def test_managed_application_metadata_is_refreshed_on_rebuild(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
