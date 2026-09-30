@@ -86,6 +86,8 @@ def verify_archive_member_hashes(
     algorithm: str = "SHA256",
 ) -> tuple[bool, str, int]:
     expected = _expected_hashes(records, file_hashes, algorithm)
+    if len(expected) != len(records):
+        return False, f"Incomplete or duplicate {algorithm} source-hash inventory.", 0
     if not expected:
         return False, f"No {algorithm} source hashes were available for member verification.", 0
 
@@ -127,7 +129,7 @@ def verify_archive_member_hashes(
         return ok, detail, len(actual)
 
     if not _has_7z_signature(archive_path):
-        return True, "SKIPPED: non-native 7-Zip test fixture.", 0
+        return False, "Invalid or unsupported 7-Zip signature; member verification was not performed.", 0
 
     executable = str(config.seven_zip_path) if config.seven_zip_path else shutil.which("7z")
     if not executable:

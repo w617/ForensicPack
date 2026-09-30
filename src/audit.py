@@ -17,7 +17,9 @@ class AuditLogger:
         self._previous_hash = "0" * 64
         if self.enabled:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text("", encoding="utf-8")
+            # Never truncate prior evidence history, even if a caller reuses a path.
+            with self.path.open("x", encoding="utf-8"):
+                pass
 
     @staticmethod
     def _canonical(payload: dict[str, Any]) -> bytes:

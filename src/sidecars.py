@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 from hashing import hash_file
@@ -41,6 +42,31 @@ def _checksum_name(target: Path, checksum_dir: Path) -> str:
     return Path(relative).as_posix()
 
 
+def create_run_metadata_dir(output_dir: Path, item_name: str) -> Path:
+    """Preserve legacy records and allocate an exclusive per-job workspace."""
+    root = metadata_output_dir(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    latest = root / f"{item_name}.manifest.json"
+    try:
+        already_versioned = bool(json.loads(latest.read_text(encoding="utf-8")).get("run_id"))
+    except (OSError, ValueError, AttributeError):
+        already_versioned = False
+    if not already_versioned:
+        legacy = [root / f"{item_name}{suffix}" for suffix in (
+            ".manifest.txt", ".manifest.json", ".audit.jsonl", ".sha256",
+            ".manifest.json.sig", ".certificate.pem",
+        )]
+        existing = [path for path in legacy if path.is_file()]
+        if existing:
+            history = root / "History" / uuid.uuid4().hex
+            history.mkdir(parents=True, exist_ok=False)
+            for path in existing:
+                shutil.copy2(path, history / path.name)
+    run = root / "Runs" / uuid.uuid4().hex
+    run.mkdir(parents=True, exist_ok=False)
+    return run
+
+
 def write_package_sidecars(
     item_path: Path,
     base_archive: Path,
@@ -52,8 +78,9 @@ def write_package_sidecars(
     content_verify: str,
     audit_log_path: Path | None,
     audit_final_hash: str,
+    metadata_dir: Path | None = None,
 ) -> dict[str, str]:
-    metadata_dir = metadata_output_dir(config.output_dir)
+    metadata_dir = metadata_dir or metadata_output_dir(config.output_dir)
     metadata_dir.mkdir(parents=True, exist_ok=True)
     stem = metadata_dir / item_path.name
     text_manifest_path = stem.with_name(f"{stem.name}.manifest.txt")
@@ -74,6 +101,7 @@ def write_package_sidecars(
     ]
     payload: dict[str, object] = {
         "schema": "org.forensicpack.package-manifest/v1",
+        "run_id": metadata_dir.name if metadata_dir.parent.name == "Runs" else "",
         "tool": {"name": APP_NAME, "version": APP_VERSION},
         "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds"),
         "case_name": item_path.name,
@@ -102,11 +130,11 @@ def write_package_sidecars(
     checksum_targets.append(json_manifest_path)
     if audit_log_path and audit_log_path.exists():
         checksum_targets.append(audit_log_path)
-    checksum_lines = []
-    for target in checksum_targets:
-        digest = hash_file(target, ["SHA256"])["SHA256"]
-        checksum_lines.append(f"{digest} *{_checksum_name(target, checksum_path.parent)}")
-    checksum_path.write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+    target_hashes = [(hash_file(target, ["SHA256"])["SHA256"], target) for target in checksum_targets]
+    checksum_path.write_text(
+        "\n".join(f"{digest} *{_checksum_name(target, checksum_path.parent)}" for digest, target in target_hashes) + "\n",
+        encoding="utf-8",
+    )
 
     signature_value = ""
     if config.signing_key_path:
@@ -114,6 +142,21 @@ def write_package_sidecars(
         signature_value = str(signature_path)
         if config.signing_certificate_path:
             shutil.copy2(config.signing_certificate_path, certificate_copy)
+
+    # Compatibility copies expose the latest successful run. The run originals
+    # are never overwritten, and database/report paths point to those originals.
+    latest_dir = metadata_output_dir(config.output_dir)
+    if metadata_dir != latest_dir:
+        for path in (text_manifest_path, json_manifest_path, audit_log_path, signature_path, certificate_copy):
+            if path and path.is_file():
+                temporary = latest_dir / f".{uuid.uuid4().hex}.tmp"
+                shutil.copy2(path, temporary)
+                temporary.replace(latest_dir / path.name)
+        latest_checksum = latest_dir / checksum_path.name
+        latest_checksum.write_text(
+            "\n".join(f"{digest} *{_checksum_name(target, latest_dir)}" for digest, target in target_hashes) + "\n",
+            encoding="utf-8",
+        )
 
     return {
         "text_manifest": str(text_manifest_path) if text_manifest_path.exists() else "",

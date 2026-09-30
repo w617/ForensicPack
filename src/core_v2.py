@@ -23,7 +23,8 @@ from models import (
     summarize_job_results,
 )
 from safety import classify_source_items, output_collisions, preflight_session
-from sidecars import verify_checksum_file, write_package_sidecars
+from sidecars import create_run_metadata_dir, verify_checksum_file, write_package_sidecars
+from package_validation import resume_validation_error, source_snapshot_error
 from state_db import StateStore, open_state_store
 from utils import (
     ARCHIVE_FORMATS,
@@ -70,7 +71,7 @@ def _default_result(item_path: Path, config: JobConfig) -> JobResult:
 
 
 def _result_from_resume_row(row: sqlite3.Row, config: JobConfig) -> JobResult:
-    warnings = ["Resumed from prior completed state."]
+    warnings = ["Resume revalidated the saved manifest, every archive volume, and current source SHA256 values."]
     if row["warning_text"]:
         warnings.insert(0, row["warning_text"])
     return JobResult(
@@ -86,6 +87,8 @@ def _result_from_resume_row(row: sqlite3.Row, config: JobConfig) -> JobResult:
         status="skipped",
         warnings=warnings,
         manifest_path=row["manifest_path"] or "",
+        external_manifest_json=row["manifest_json_path"] or "",
+        content_verify="PASS",
     )
 
 
@@ -135,7 +138,7 @@ def validate_config(config: JobConfig) -> None:
 def report_paths(output_dir: Path) -> tuple[Path, Path, Path, Path]:
     metadata_dir = metadata_output_dir(output_dir)
     metadata_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     stem = metadata_dir / f"ForensicPack_Report_{stamp}"
     return (
         stem.with_suffix(".txt"),
@@ -177,8 +180,9 @@ def _process_single_item(
     metadata_dir.mkdir(parents=True, exist_ok=True)
     expected_archive = expected_archive_path(item_path, config.output_dir, config.archive_fmt)
     existing_verify_path = split_entry_path(expected_archive, config)
-    if config.skip_existing and existing_verify_path.exists():
-        if verify_archive(existing_verify_path, config.archive_fmt, callbacks, job_id=job_id, token=token):
+    if config.skip_existing and not config.resume_enabled and existing_verify_path.exists():
+        if verify_archive(existing_verify_path, config.archive_fmt, callbacks, job_id=job_id, token=token,
+                          **({"password": config.password} if config.password else {})):
             result.end_time = _now_iso()
             result.file_count = "Skipped"
             result.source_size = "Skipped"
@@ -194,6 +198,7 @@ def _process_single_item(
         callbacks.item_status_cb(job_id, "running")
     callbacks.log_cb(f"  [START] {item_path.name}", "#58a6ff")
 
+    metadata_dir = create_run_metadata_dir(config.output_dir, item_path.name)
     final_manifest_name = f"{item_path.name}.manifest.txt"
     temp_manifest = metadata_dir / f"tmp_{job_id}_{item_path.name}_manifest.txt"
     temp_archive = config.output_dir / f"{item_path.name}{archive_suffix(config.archive_fmt)}.partial"
@@ -204,7 +209,7 @@ def _process_single_item(
     result.audit_log_path = str(item_audit_path) if config.audit_log else ""
 
     try:
-        audit.record("job_started", source=str(item_path), output=str(expected_archive), format=config.archive_fmt)
+        audit.record("job_started", run_id=metadata_dir.name, source=str(item_path), output=str(expected_archive), format=config.archive_fmt)
         token.raise_if_requested(job_id)
         records, _total_size, scan_issues = build_forensic_inventory(
             item_path,
@@ -271,7 +276,8 @@ def _process_single_item(
         )
         audit.record("archive_created", temporary_archive=str(temp_verify_path))
         callbacks.emit_progress(ProgressEvent(job_id, "verify", 0, 1, f"Verifying {item_path.name}"))
-        if not verify_archive(temp_verify_path, config.archive_fmt, callbacks, job_id=job_id, token=token):
+        if not verify_archive(temp_verify_path, config.archive_fmt, callbacks, job_id=job_id, token=token,
+                              **({"password": config.password} if config.password else {})):
             raise RuntimeError("Archive structural verification failed.")
         audit.record("archive_structure_verified")
 
@@ -286,6 +292,10 @@ def _process_single_item(
                 job_id,
                 algorithm="SHA256",
             )
+            # A true return with no actual member checks must never become PASS.
+            if member_ok and (not records or member_count != len(records)):
+                member_ok = False
+                member_detail = "Member verification did not cover the complete source inventory."
             result.archive_member_count = member_count
             result.content_verify = "PASS" if member_ok else f"FAILED: {member_detail}"
             audit.record("archive_member_hashes_verified", passed=member_ok, detail=member_detail)
@@ -309,6 +319,21 @@ def _process_single_item(
             result.warnings.append("Archive hash skipped by policy.")
         audit.record("archive_finalized", archive=str(final_verify_path), size=result.archive_size, hashes=result.hashes)
 
+        deletion_block = None
+        if config.delete_source:
+            if scan_issues or result.warnings:
+                deletion_block = "Packaging has unresolved scan issues or warnings."
+            elif result.content_verify != "PASS" or result.archive_member_count != len(records) or not records:
+                deletion_block = "Complete archived-member SHA256 verification is required."
+            else:
+                deletion_block = source_snapshot_error(
+                    item_path, [record.to_manifest_dict(file_hashes.get(record.path, {})) for record in records],
+                    token, callbacks, job_id,
+                )
+            audit.record("source_deletion_check", allowed=deletion_block is None, reason=deletion_block or "")
+            if deletion_block:
+                result.warnings.append(f"Source retained: {deletion_block}")
+
         audit.record("package_completed", scan_issue_count=len(scan_issues))
         sidecars = write_package_sidecars(
             item_path,
@@ -321,6 +346,7 @@ def _process_single_item(
             result.content_verify,
             item_audit_path if config.audit_log else None,
             audit.final_hash,
+            metadata_dir=metadata_dir,
         )
         result.manifest_path = sidecars["text_manifest"]
         result.external_manifest_json = sidecars["json_manifest"]
@@ -335,7 +361,11 @@ def _process_single_item(
         if scan_issues:
             result.warnings.append(f"{len(scan_issues)} path(s) could not be fully inventoried; see manifest.")
 
-        if config.delete_source:
+        if config.delete_source and deletion_block:
+            result.verify = "PASS WITH WARNINGS (SOURCE RETAINED)"
+            result.status = "warning"
+        if config.delete_source and not deletion_block:
+            token.raise_if_requested(job_id)
             callbacks.emit_progress(ProgressEvent(job_id, "delete", 0, 1, f"Deleting source {item_path.name}"))
             try:
                 if item_path.is_file():
@@ -363,6 +393,8 @@ def _process_single_item(
                 verify=result.verify,
                 archive_path=result.archive_path,
                 manifest_path=result.manifest_path,
+                manifest_json_path=result.external_manifest_json,
+                manifest_sha256=sidecars["manifest_sha256"],
                 file_count=file_count,
                 source_size=source_size,
                 archive_size=result.archive_size,
@@ -474,9 +506,17 @@ def run_session(
         for index, item in enumerate(items):
             row = completed_prior.get(_item_key(item))
             if row is not None:
-                results[index] = _result_from_resume_row(row, config)
-                if callbacks.item_status_cb:
-                    callbacks.item_status_cb(index, "skipped")
+                try:
+                    reason = resume_validation_error(row, item, config, token, callbacks, index)
+                except (JobCancelled, JobSkipped):
+                    state_store.close()
+                    raise
+                if reason is None:
+                    results[index] = _result_from_resume_row(row, config)
+                    if callbacks.item_status_cb:
+                        callbacks.item_status_cb(index, "skipped")
+                else:
+                    callbacks.log_cb(f"  [RESUME] Rebuilding {item.name}: {reason}", "#d29922")
     config.resume_used = bool(results)
     pending = [(index, item) for index, item in enumerate(items) if index not in results]
     worker_count = select_worker_count(config, [item for _, item in pending]) if pending else 1

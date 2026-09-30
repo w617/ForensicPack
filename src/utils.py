@@ -174,6 +174,10 @@ def session_profile_key(config: JobConfig) -> str:
         "archive_hash_mode": config.archive_hash_mode,
         "thread_strategy": config.thread_strategy,
         "dry_run": config.dry_run,
+        "verify_member_hashes": config.verify_member_hashes,
+        "scan_error_mode": config.scan_error_mode,
+        "embed_manifest": config.embed_manifest_in_archive,
+        "case_metadata": config.case_metadata or {},
     }
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()

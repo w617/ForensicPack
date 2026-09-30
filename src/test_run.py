@@ -379,6 +379,12 @@ def test_split_7z_uses_volume_entrypoint_for_verify_and_skip_existing(tmp_path: 
         return False
 
     monkeypatch.setattr(engine, "_run_7zip", fake_run_7zip)
+    # These tests cover split-path/state orchestration, not archive contents.
+    # Production verification must never recognize synthetic bytes as valid 7z.
+    monkeypatch.setattr(
+        "core_v2.verify_archive_member_hashes",
+        lambda _archive, records, *_args, **_kwargs: (True, "Test verifier", len(records)),
+    )
 
     config = JobConfig(
         source_dir=source,
@@ -773,6 +779,12 @@ def test_split_parts_persisted_in_state_store(tmp_path: Path, monkeypatch: pytes
         return False
 
     monkeypatch.setattr(engine, "_run_7zip", fake_run_7zip)
+    # These tests cover split-path/state orchestration, not archive contents.
+    # Production verification must never recognize synthetic bytes as valid 7z.
+    monkeypatch.setattr(
+        "core_v2.verify_archive_member_hashes",
+        lambda _archive, records, *_args, **_kwargs: (True, "Test verifier", len(records)),
+    )
     config = JobConfig(
         source_dir=source,
         output_dir=output,
