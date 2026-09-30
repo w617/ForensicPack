@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.3.0 — 30-Sep-2026
+
+### Added
+
+- **Exact-inventory 7z creation:** explicit UTF-8 list files, disabled recursion and
+  wildcard interpretation, literal filenames, and rejection of filenames that
+  cannot be represented safely. Excluded and post-scan files stay outside the archive.
+- **Configurable verification storage:** GUI/CLI scratch folder selection,
+  preflight capacity checks, per-device reservations within one process, extraction
+  and member-verification phases, and cancellation with subprocess reaping and cleanup.
+- **Job History & Verification:** persistent per-run index; search, status filters,
+  pagination, case/evidence IDs, original outcomes, Open Log, Open Report, and
+  import of retained v2.2.2 records. Reports include Run ID.
+- **Independent reverification:** retained metadata/audit validation, archive-volume
+  hashes, structural tests, and member SHA-256 comparisons at a relocated archive
+  folder. Timestamped outcomes leave original packaging records unchanged.
+- **Portable records:** multi-run ZIP export with manifests, audit logs, checksums,
+  available signatures/certificates, session reports, and reverification reports;
+  SHA-256 bundle inventory and recipient-side verification without a history index.
+- CLI commands `history`, `reverify`, `export-records`, and `verify-records`;
+  `pack --verify-temp-dir` and secure interactive password entry for reverification.
+
+### Reliability and documentation
+
+- Quiet 7-Zip processes remain cancellable; cancelled processes are killed and reaped.
+- GUI exit requests cancellation and waits for active packaging/history cleanup.
+- Added regression tests for disk-full/disconnected-drive/I/O failures, partial-output
+  cleanup, long paths, exact inventory, scratch reservations, history and exports.
+- Expanded README with storage sizing, scope of reverification, history import,
+  portable-record sharing considerations, and CLI examples.
+
+### Operational notes
+
+- Scratch reservation is inventoried bytes plus max(10%, 64 MiB), coordinated only
+  within a single application process. External disk consumers can still exhaust space.
+- Reverification compares archives against retained records; it does not re-examine
+  the original source or change the original outcome. History retains documentation,
+  not overwritten evidence bytes. Imported history is explicitly not reverified.
+- Export bundles contain no evidence archives. Session reports may describe other
+  cases from the same session. Hash checks establish consistency, not independent
+  authenticity; included signature files are not automatically signature-validated.
+- Existing v2.2.2 integrity safeguards and archive-only delivery behavior remain.
+
+### Validation
+
+- Local Python 3.12: **125 passed, 20 skipped, 6 existing expected failures**;
+  **73.47% coverage**. Skips are display-dependent GUI tests and the opt-in large test.
+- Separately passed a real 128 MiB multi-volume 7z round trip and historical
+  reverification, with native 7-Zip 26.03.
+- Ruff and the configured Bandit security checks pass. Windows/Linux matrix tests,
+  Windows GUI tests, packaging, and executable launch are checked by GitHub Actions.
+- Injected I/O failures validate application handling; physical disconnection and
+  power-loss behavior still require hardware validation.
+
 ## 2.2.2 — 30-Sep-2026
 
 ### Fixed

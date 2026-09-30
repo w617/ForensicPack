@@ -528,6 +528,7 @@ class ForensicPackApp(tk.Tk):
         self._progress_interval_var.set(int(settings.get("progress_interval_ms", 200)))
         self._hash_threads_var.set(int(settings.get("hash_threads", 4)))
         self._state_db_var.set(str(settings.get("state_db_path", "")))
+        self._verify_temp_var.set(str(settings.get("verify_temp_dir", "")))
         selected_hashes = {str(value) for value in settings.get("hash_algorithms", ["SHA256"])}
         for alg, var in self._hash_vars.items():
             var.set(alg in selected_hashes)
@@ -995,6 +996,26 @@ class ForensicPackApp(tk.Tk):
         self._progress_interval_spin.pack(side="left")
         self._register_mutable(self._progress_interval_spin)
         self._help_btn(adv_row, "Progress Interval", "Throttles progress event updates to reduce UI overhead. Lower values update more frequently, higher values reduce noise.")
+
+        temp_row = tk.Frame(inner, bg=theme.BG2)
+        temp_row.pack(fill="x", pady=3)
+        tk.Label(temp_row, text="Verification temp:", width=18, anchor="w", fg=theme.FG, bg=theme.BG2, font=FONT_MAIN).pack(side="left")
+        self._verify_temp_var = tk.StringVar(value=str(self._settings.get("verify_temp_dir", "")))
+        self._verify_temp_entry = tk.Entry(temp_row, textvariable=self._verify_temp_var, bg=theme.BG3, fg=theme.WHITE,
+                                         insertbackground=theme.WHITE, font=FONT_MAIN)
+        self._verify_temp_entry.pack(side="left", fill="x", expand=True)
+        self._register_mutable(self._verify_temp_entry)
+        def pick_temp():
+            selected = filedialog.askdirectory(title="Temporary drive/folder for 7z verification", mustexist=True)
+            if selected:
+                self._verify_temp_var.set(selected)
+        browse = tk.Button(temp_row, text="Browse", command=pick_temp)
+        browse.pack(side="right")
+        self._register_mutable(browse)
+        reset = tk.Button(temp_row, text="System", command=lambda: self._verify_temp_var.set(""))
+        reset.pack(side="right")
+        self._register_mutable(reset)
+        self._help_btn(temp_row, "Verification temporary storage", "7z readback extracts into this folder. Leave blank for the system temporary folder. Space is checked and extraction can be cancelled.")
 
         db_row = tk.Frame(inner, bg=theme.BG2)
         db_row.pack(fill="x", pady=3)
@@ -1656,6 +1677,15 @@ class ForensicPackApp(tk.Tk):
             f"Processed {completed}/{total} | Phase: {self._current_phase} | Elapsed: {format_duration(elapsed)} | ETA: {format_duration(eta)} | Finish: {eta_finish_label}"
         )
 
+    def _open_job_history(self):
+        from gui_components.history_window import HistoryWindow
+        text = self._verify_temp_var.get().strip()
+        window = getattr(self, "_history_window", None)
+        if window is not None and window.winfo_exists():
+            window.lift()
+            return
+        self._history_window = HistoryWindow(self, Path(text) if text else None)
+
     def _open_verbose(self):
         if hasattr(self, "_verbose_win") and self._verbose_win.winfo_exists():
             self._verbose_win.lift()
@@ -1888,6 +1918,7 @@ class ForensicPackApp(tk.Tk):
             resume_enabled=self._resume_var.get(),
             dry_run=self._dry_run_var.get(),
             state_db_path=Path(self._state_db_var.get().strip()) if self._state_db_var.get().strip() else None,
+            verify_temp_dir=Path(self._verify_temp_var.get().strip()) if self._verify_temp_var.get().strip() else None,
             report_json=self._report_json_var.get(),
             embed_manifest_in_archive=self._embed_manifest_in_archive_var.get(),
             selected_item_names=selected_item_names,
@@ -1936,6 +1967,7 @@ class ForensicPackApp(tk.Tk):
             "thread_strategy": "auto" if self._auto_threads_var.get() else "fixed",
             "progress_interval_ms": int(self._progress_interval_var.get()),
             "state_db_path": self._state_db_var.get().strip(),
+            "verify_temp_dir": self._verify_temp_var.get().strip(),
             "report_json": bool(self._report_json_var.get()),
             "embed_manifest_in_archive": bool(self._embed_manifest_in_archive_var.get()),
             "hash_threads": max(1, int(self._hash_threads_var.get())),
@@ -2173,14 +2205,26 @@ class ForensicPackApp(tk.Tk):
         return removed
 
     def on_close(self):
-        if self._thread and self._thread.is_alive():
-            if messagebox.askyesno("Exit", "Processing is running. Force quit?"):
-                if self._token:
-                    self._token.request_cancel()
-                self._cleanup_temp_outputs()
-                self.update_idletasks()
-                self.destroy()
+        history = getattr(self, "_history_window", None)
+        history_busy = history and history.winfo_exists() and history.worker and history.worker.is_alive()
+        if (self._thread and self._thread.is_alive()) or history_busy:
+            if not messagebox.askyesno("Exit", "Cancel active tasks and exit after cleanup?"):
+                return
+            if self._token:
+                self._token.request_cancel()
+            if history_busy:
+                history.closing = True
+                history.cancel()
+            self._status_var.set("Cancelling before exit")
+            self.after(100, self._finish_close)
+            return
+        self.destroy()
+
+    def _finish_close(self):
+        history = getattr(self, "_history_window", None)
+        history_busy = history and history.worker and history.worker.is_alive()
+        if (self._thread and self._thread.is_alive()) or history_busy:
+            self.after(100, self._finish_close)
         else:
             self.destroy()
-
 

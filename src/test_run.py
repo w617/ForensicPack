@@ -360,7 +360,7 @@ def test_split_7z_uses_volume_entrypoint_for_verify_and_skip_existing(tmp_path: 
     output = tmp_path / "output"
     tested_paths: list[Path] = []
 
-    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks):
+    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks, **_kwargs):
         command = args[0]
         if command == "a":
             targets = [Path(arg) for arg in args[1:] if not str(arg).startswith("-")]
@@ -762,7 +762,7 @@ def test_split_parts_persisted_in_state_store(tmp_path: Path, monkeypatch: pytes
     output = tmp_path / "output"
     state_db = output / "state.db"
 
-    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks):
+    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks, **_kwargs):
         command = args[0]
         if command == "a":
             targets = [Path(arg) for arg in args[1:] if not str(arg).startswith("-")]

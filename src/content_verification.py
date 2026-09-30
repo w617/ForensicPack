@@ -6,7 +6,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from models import CancellationToken, FileRecord, JobCallbacks, JobConfig
+from models import CancellationToken, FileRecord, JobCallbacks, JobConfig, ProgressEvent
+from process_runner import run_process
+from verification_space import scratch_root, reserve_scratch
 from utils import redact_command
 
 
@@ -131,32 +133,25 @@ def verify_archive_member_hashes(
     if not _has_7z_signature(archive_path):
         return False, "Invalid or unsupported 7-Zip signature; member verification was not performed.", 0
 
-    executable = str(config.seven_zip_path) if config.seven_zip_path else shutil.which("7z")
-    if not executable:
-        for candidate in (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"):
-            if Path(candidate).is_file():
-                executable = candidate
-                break
+    from archivers import find_7zip
+    executable = find_7zip(config.seven_zip_path)
     if not executable:
         return False, "7-Zip was not found for archive member extraction verification.", 0
 
-    with tempfile.TemporaryDirectory(prefix="ForensicPack_verify_") as temporary:
+    scratch = scratch_root(config)
+    total_bytes = sum(record.size for record in records)
+    callbacks.log_cb(f"  Verification temporary folder: {scratch} ({total_bytes:,} source bytes)", "#8b949e")
+    with reserve_scratch(scratch, total_bytes), tempfile.TemporaryDirectory(
+        prefix="ForensicPack_verify_", dir=scratch
+    ) as temporary:
         extraction_root = Path(temporary)
-        command = [executable, "x", str(archive_path), f"-o{extraction_root}", "-y"]
+        command = [executable, "x", str(archive_path.resolve()), f"-o{extraction_root}", "-y"]
         if config.password:
             command.append(f"-p{config.password}")
-        callbacks.log_cb(f"  [CMD] {redact_command(command)}", "#8b949e")
-        completed = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if completed.returncode != 0:
+        callbacks.emit_progress(ProgressEvent(job_id, "verify_extract", 0, 1, "Extracting archive for verification"))
+        if not run_process(command, token, job_id, callbacks):
             return False, "7-Zip extraction verification failed.", 0
+        callbacks.emit_progress(ProgressEvent(job_id, "verify_extract", 1, 1, "Verification extraction complete"))
         root_resolved = extraction_root.resolve()
         all_members: set[str] = set()
         for extracted in extraction_root.rglob("*"):
@@ -164,6 +159,7 @@ def verify_archive_member_hashes(
                 all_members.add(extracted.relative_to(extraction_root).as_posix())
         for name in expected:
             token.raise_if_requested(job_id)
+            callbacks.emit_progress(ProgressEvent(job_id, "verify_members", len(actual), len(expected), "Comparing member hashes"))
             candidate = (extraction_root / Path(name)).resolve()
             try:
                 candidate.relative_to(root_resolved)

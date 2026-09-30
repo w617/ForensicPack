@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -51,48 +52,15 @@ class _CancelableReader:
 
 
 def _run_7zip(
-    job_id: int,
-    args: list[str],
-    token: CancellationToken,
-    runtime: RuntimeState,
-    callbacks: JobCallbacks,
+    job_id: int, args: list[str], token: CancellationToken, runtime: RuntimeState,
+    callbacks: JobCallbacks, *, cwd: Path | None = None,
 ) -> bool:
-    from utils import redact_command
-
+    from process_runner import run_process
     executable = find_7zip()
     if not executable:
         callbacks.log_cb("  [ERROR] 7-Zip not found. Configure its path or install 7-Zip.", "#f85149")
         return False
-    command = [executable] + args
-    callbacks.log_cb(f"  [CMD] {redact_command(command)}", "#8b949e")
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    runtime.set_process(job_id, process)
-    try:
-        if process.stdout is None:
-            raise RuntimeError("subprocess stdout is unavailable; cannot read 7-Zip output.")
-        output_lines: list[str] = []
-        for line in process.stdout:
-            token.raise_if_requested(job_id)
-            text = line.rstrip()
-            if text:
-                output_lines.append(text)
-                if callbacks.verbose_cb:
-                    callbacks.verbose_cb(text)
-        process.wait()
-        if process.returncode != 0:
-            for text in output_lines[-15:]:
-                callbacks.log_cb(f"  [7z] {text}", "#f85149")
-            return False
-        return True
-    finally:
-        runtime.set_process(job_id, None)
+    return run_process([executable, *args], token, job_id, callbacks, runtime, cwd)
 
 
 def create_archive(
@@ -126,16 +94,34 @@ def create_archive(
         os.environ["FORENSICPACK_7ZIP"] = str(config.seven_zip_path)
     try:
         if config.archive_fmt == "7z":
-            args = ["a", f"-mx={level}", "-mmt=on", "-snl-"]
+            # Relative names preserve exactly the same archive layout as ZIP/TAR.
+            # A UTF-8 list avoids command-line length limits; -spd prevents wildcard
+            # expansion and -r- prevents discovery outside the inventoried files.
+            names = []
+            parent = item_path.parent.resolve()
+            for record in inventory:
+                token.raise_if_requested(job_id)
+                name = record.archive_rel
+                if any(char in name for char in ("\n", "\r", "\x00")):
+                    raise ValueError(f"7z list files cannot represent this filename: {name!r}")
+                if record.path.is_symlink() or not record.path.is_file():
+                    raise ValueError(f"Inventoried source is no longer a regular file: {record.path}")
+                if (parent / name).resolve() != record.path.resolve():
+                    raise ValueError(f"Inventory path mismatch: {name}")
+                names.append(name)
+            args = ["a", "-t7z", f"-mx={level}", "-mmt=on", "-r-", "-spd", "-scsUTF-8"]
             if config.password:
                 args += [f"-p{config.password}", "-mhe=on"]
             if split_arg:
                 args.append(f"-v{split_arg}")
-            args += [str(temp_archive), str(item_path)]
-            if config.embed_manifest_in_archive and manifest_path.exists():
-                args.append(str(manifest_path))
-            if not runner(job_id, args, token, runtime, callbacks):
-                raise RuntimeError("7z archive creation failed.")
+            with tempfile.TemporaryDirectory(prefix="ForensicPack_list_", dir=manifest_path.parent) as temporary:
+                listing = Path(temporary) / "files.txt"
+                listing.write_text("\n".join(names) + "\n", encoding="utf-8")
+                args += [str(temp_archive.resolve()), f"@{listing.resolve()}"]
+                if config.embed_manifest_in_archive and manifest_path.exists():
+                    args.append(str(manifest_path.resolve()))
+                if not runner(job_id, args, token, runtime, callbacks, cwd=parent):
+                    raise RuntimeError("7z archive creation failed.")
             callbacks.emit_progress(ProgressEvent(job_id, "archive", 1, 1, f"Archived {item_path.name}"))
             return temp_archive
 

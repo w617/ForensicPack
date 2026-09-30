@@ -45,8 +45,9 @@ def _run_7zip(
     token: CancellationToken,
     runtime: RuntimeState,
     callbacks: JobCallbacks,
+    *, cwd: Path | None = None,
 ) -> bool:
-    return _archivers._run_7zip(job_id, args, token, runtime, callbacks)
+    return _archivers._run_7zip(job_id, args, token, runtime, callbacks, cwd=cwd)
 
 
 def _redact_command(command: list[str]) -> str:

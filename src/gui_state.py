@@ -35,6 +35,7 @@ GUI_SETTINGS_DEFAULTS: dict[str, object] = {
     "thread_strategy": "fixed",
     "progress_interval_ms": 200,
     "state_db_path": "",
+    "verify_temp_dir": "",
     "report_json": False,
     "embed_manifest_in_archive": True,
     "use_metadata": False,
@@ -110,6 +111,8 @@ PHASE_LABELS = {
     "manifest": "Hashing source files",
     "archive": "Building archive",
     "verify": "Verifying archive",
+    "verify_extract": "Extracting for verification",
+    "verify_members": "Comparing member hashes",
     "hash_archive": "Hashing final archive",
     "delete": "Deleting original source",
     "done": "Completed",
@@ -143,6 +146,7 @@ class GuiSettings:
     thread_strategy: str = "fixed"
     progress_interval_ms: int = 200
     state_db_path: str = ""
+    verify_temp_dir: str = ""
     report_json: bool = False
     embed_manifest_in_archive: bool = True
     delete_source: bool = False
@@ -309,6 +313,7 @@ def build_run_summary(config: JobConfig) -> str:
         f"JSON Report     : {'Yes' if config.report_json else 'No'}",
         f"Embed Manifest  : {'Yes' if config.embed_manifest_in_archive else 'No'}",
         f"State DB        : {config.state_db_path or '(default)'}",
+        f"Verify Temp     : {config.verify_temp_dir or '(system temporary folder)'}",
     ]
     if config.case_metadata and any(config.case_metadata.values()):
         lines.append("-" * 40)

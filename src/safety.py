@@ -222,6 +222,13 @@ def preflight_session(items: list[Path], config: JobConfig) -> list[str]:
         except FileNotFoundError:
             warnings.append("Free-space preflight could not resolve the output volume.")
 
+    if config.archive_fmt == "7z" and config.verify_member_hashes and not config.dry_run:
+        from verification_space import scratch_root, check_scratch_space
+        # This check covers the largest single job. Active workers reserve scratch
+        # independently immediately before extraction to avoid overcommitting it.
+        root = scratch_root(config)
+        check_scratch_space(root, max((_walk_size(item) for item in items), default=0))
+
     threshold = max(1, config.long_path_warning_threshold)
     for item in items:
         if len(str(safe_resolve(item))) >= threshold:

@@ -129,7 +129,7 @@ def test_configured_7zip_path_is_used_during_verification(
     configured_path.write_text("placeholder", encoding="utf-8")
     observed: list[str | None] = []
 
-    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks):
+    def fake_run_7zip(_job_id, args, _token, _runtime, _callbacks, **_kwargs):
         if args[0] == "a":
             targets = [Path(arg) for arg in args[1:] if not str(arg).startswith("-")]
             targets[0].write_bytes(b"archive")

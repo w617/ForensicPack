@@ -151,3 +151,19 @@ def test_build_diagnostic_snapshot_contains_version(app):
     from version import APP_VERSION
     snapshot = app._build_diagnostic_snapshot()
     assert APP_VERSION in snapshot
+
+
+def test_verification_temp_setting_roundtrips(app, tmp_path):
+    app._verify_temp_var.set(str(tmp_path))
+    payload = app._collect_settings_payload()
+    assert payload["verify_temp_dir"] == str(tmp_path)
+    app._apply_settings_to_controls(payload)
+    assert app._build_config(["SHA256"], None, None).verify_temp_dir == tmp_path
+
+
+def test_history_window_can_open_and_close(app):
+    app._open_job_history()
+    window = app._history_window
+    assert window.winfo_exists()
+    assert window.tree is not None
+    window.close()
