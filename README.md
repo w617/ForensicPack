@@ -13,6 +13,24 @@
 
 ForensicPack turns folders and files into documented, verifiable evidence packages through a streamlined Windows interface and repeatable CLI workflow.
 
+## Significant changes — v2.2.2
+
+Version 2.2.2 adds five evidence-integrity fixes. Upgrade the Windows application
+to receive them; the previous v2.2.1 executable does not include these changes.
+Download the Windows package, checksum, and SBOM from the
+[v2.2.2 release](https://github.com/w617/ForensicPack/releases/tag/v2.2.2).
+
+| Change | Effect on your workflow |
+|---|---|
+| Source-deletion safeguards | Incomplete scans, disabled verification, unresolved packaging warnings, or changed source files retain the source and produce a warning. |
+| 7-Zip execution repair | Removes the recursive runner failure, supplies passwords to structural verification, and embeds manifests during initial creation of encrypted or split archives. |
+| Validated resume | Rechecks the saved manifest, every archive volume, and current source files before skipping completed work. |
+| Retained run history | Each packaging attempt receives its own audit and metadata folder; reruns preserve earlier records. |
+| Complete member verification | Invalid 7z signatures and zero or partial member checks cannot be reported as a full verification pass. |
+
+See [CHANGELOG.md](CHANGELOG.md) for implementation details, validation results,
+and earlier release changes.
+
 ## Core capabilities
 
 | Capability | Description |
@@ -25,7 +43,7 @@ ForensicPack turns folders and files into documented, verifiable evidence packag
 | Structural verification | `7z t`, ZIP CRC validation, or full TAR member readback |
 | External metadata | Text/JSON manifests, SHA-256 sidecars, optional signatures, and audit logs |
 | Reporting | TXT, CSV, optional JSON, and optional PDF |
-| Resume support | SQLite-backed interrupted-session recovery |
+| Resume support | SQLite-backed recovery with manifest, archive-volume, and source revalidation |
 | Verified transfer | Copies a package and confirms destination hashes |
 | Release assurance | Matrix tests, Bandit, dependency audit, CodeQL, Windows build smoke tests, checksums, and CycloneDX SBOM |
 
@@ -41,19 +59,30 @@ Generated application metadata is stored separately.
 
 ### Windows
 
-```text
-%LOCALAPPDATA%\ForensicPack\
-├── forensicpack_state.db
-└── Cases\
-    └── <destination-name>-<identifier>\
-        ├── Case Files.audit.jsonl
-        ├── Case Files.manifest.json
-        ├── Case Files.manifest.txt
-        ├── Case Files.sha256
-        └── ForensicPack_Report_<timestamp>.*
-```
+The application-data root is `%LOCALAPPDATA%\ForensicPack`. The resume database
+is `forensicpack_state.db` under that root. Each destination has a metadata
+workspace at `Cases\<destination-name>-<identifier>`.
 
-The workspace identifier is derived from the resolved destination path. Repeated work against the same destination reuses the correct metadata workspace without exposing the full path in the folder name.
+| Location within the workspace | Contents |
+|---|---|
+| `Runs\<run-id>\<item-name>.audit.jsonl` | Original event log for that packaging attempt, including failed attempts |
+| `Runs\<run-id>\<item-name>.manifest.txt` | Retained source inventory and hashes, when enabled |
+| `Runs\<run-id>\<item-name>.manifest.json` | Package metadata, archive-volume hashes, and verification information |
+| `Runs\<run-id>\<item-name>.sha256` | Checksums referencing that run's package and metadata files |
+| `History\<identifier>` | Copies of legacy metadata preserved before replacement |
+| `<item-name>.manifest.json`, `.manifest.txt`, `.audit.jsonl`, `.sha256` | Compatibility files for the latest completed package, when generated |
+| `ForensicPack_Report_<timestamp>.*` | Session reports with paths to the original run records |
+
+Use **Open Metadata** to reach the destination's workspace. For a particular
+archive-creation attempt, follow the audit-log path in its report or inspect its
+`Runs` folder. The root audit copy represents the latest completed package;
+it may not show a later failed attempt.
+
+The workspace identifier is derived from the resolved destination path. Repeated
+work against the same destination uses the same workspace, with separate run
+folders. Historical records preserve prior documentation; they do not retain
+archive bytes overwritten by a later rebuild. A historical checksum may therefore
+no longer match a rebuilt archive at the same path.
 
 `FORENSICPACK_APPDATA` may be set for managed deployments or isolated testing.
 
@@ -96,6 +125,39 @@ A normal verified package completes three checks:
 3. Archived-member SHA-256 values are compared with the source manifest.
 
 The external checksum sidecar can also be used for later package verification from the original destination and its associated application-data workspace.
+
+A structural test establishes that an archive can be read. A complete content
+verification also requires archived-member SHA-256 values to match every
+inventoried source file. Review **Content Verify**, warnings, and scan issues
+alongside the overall result, particularly when optional checks are disabled.
+
+### Source deletion
+
+Delete Source remains an optional advanced operation. Before it is allowed,
+ForensicPack requires a complete scan, successful member-hash verification for
+every inventoried file, and no unresolved packaging warnings. It then inventories
+and hashes the source again to detect changes. If a requirement is unmet, the
+source is retained and the result identifies the warning. Cancellation or a
+verification failure prevents cleanup.
+
+The source check is a point-in-time comparison, not a filesystem snapshot or lock.
+Use stable evidence sources throughout packaging and verification.
+
+### Resume and upgrades
+
+Resume considers only jobs that previously completed without warnings. Before
+skipping one, it checks the saved manifest's SHA-256 against the database, the
+expected archive path, the complete split-volume set, each archive-volume hash,
+and the current source inventory and SHA-256 values.
+
+A missing or changed archive, source, or saved manifest causes rebuilding instead
+of an unchecked skip. Unrelated output collisions remain protected. When Resume
+and Skip Existing are both selected, Skip Existing cannot bypass these checks.
+
+Existing databases receive the new manifest-validation fields automatically.
+Older jobs without a saved manifest digest must be rebuilt before they can be
+safely resumed. Revalidation reads source and archive bytes, so large cases take
+longer than the former database-only skip.
 
 ## Quick start
 
@@ -145,7 +207,7 @@ python forensicpack.py transfer-verify `
 | Control | Purpose |
 |---|---|
 | Split archive | Segment 7-Zip output into fixed-size volumes |
-| Resume | Reuse completed state from the application-data SQLite database |
+| Resume | Revalidate saved manifests, all archive volumes, and current source hashes before skipping completed work |
 | Dry run | Inventory and plan without producing an archive |
 | Fast scan | Optimize discovery for large file counts |
 | Skip archive hash | Retain file-level integrity work while skipping the final container hash |
@@ -167,6 +229,12 @@ cd src
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+The integrity regression suite covers source retention, changed and missing
+resume inputs, split volumes, audit-history preservation, invalid signatures,
+and nonrecursive 7-Zip execution. Native round-trip tests require an installed
+7-Zip executable and cover plain, encrypted, and split archives; they skip if
+7-Zip is unavailable.
 
 CI also runs Ruff, mypy analysis, Bandit, pip-audit, coverage, CodeQL, a Windows PyInstaller build, and an executable smoke launch.
 
@@ -195,6 +263,8 @@ ForensicPack creates evidence archives, not physical, filesystem, or bit-for-bit
 - The packaged EXE does not bundle `7z.exe`.
 - GUI passwords are never persisted.
 - A custom resume database path may be selected under Advanced Settings.
+- Resume rechecks bytes and may take time on large cases; legacy jobs without a saved manifest digest rebuild.
+- Source deletion requires complete verification and a fresh source check. Scan omissions, disabled verification, or unresolved warnings retain the source.
 - Legacy `_ForensicPack_Metadata` folders are not deleted automatically; they remain excluded from later source scans.
 
 ## Intended use

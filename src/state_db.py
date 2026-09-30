@@ -63,6 +63,10 @@ class StateStore:
                 );
                 """
             )
+            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+            for column in ("manifest_json_path", "manifest_sha256"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT DEFAULT ''")
             self._conn.commit()
 
     def upsert_discovered(self, session_key: str, item_path: Path, config: JobConfig) -> None:
@@ -105,6 +109,8 @@ class StateStore:
         verify: str = "",
         archive_path: str = "",
         manifest_path: str = "",
+        manifest_json_path: str = "",
+        manifest_sha256: str = "",
         file_count: int | str | None = None,
         source_size: int | str | None = None,
         archive_size: int | str | None = None,
@@ -122,6 +128,7 @@ class StateStore:
                 UPDATE jobs
                 SET state=?, verify=?, archive_path=COALESCE(NULLIF(?, ''), archive_path),
                     manifest_path=COALESCE(NULLIF(?, ''), manifest_path),
+                    manifest_json_path=?, manifest_sha256=?,
                     file_count=?, source_size=?, archive_size=?,
                     warning_text=COALESCE(NULLIF(?, ''), warning_text),
                     error_text=COALESCE(NULLIF(?, ''), error_text),
@@ -133,6 +140,8 @@ class StateStore:
                     verify,
                     archive_path,
                     manifest_path,
+                    manifest_json_path,
+                    manifest_sha256,
                     _as_int(file_count),
                     _as_int(source_size),
                     _as_int(archive_size),
@@ -164,20 +173,13 @@ class StateStore:
             self._conn.commit()
 
     def completed_items(self, session_key: str) -> dict[str, sqlite3.Row]:
-        """Return all items considered complete enough to skip on resume.
-
-        Includes 'completed', 'skipped' (the nominal states) as well as
-        'verified' and 'hashed' — items that finished archive verification
-        or archive hashing but crashed before the final state write. This
-        closes the gap where a restart between phases causes unnecessary
-        re-processing of already-verified jobs.
-        """
+        """Return completed candidates; the caller must revalidate before skipping."""
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             rows = self._conn.execute(
                 """
                 SELECT * FROM jobs
-                WHERE session_key=? AND state IN ('completed', 'skipped', 'verified', 'hashed')
+                WHERE session_key=? AND state = 'completed'
                 """,
                 (session_key,),
             ).fetchall()

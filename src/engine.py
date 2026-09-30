@@ -121,22 +121,10 @@ def create_archive(
     callbacks: JobCallbacks,
     temp_archive: Path,
 ) -> Path:
-    original_run_7zip = _archivers._run_7zip
-    _archivers._run_7zip = _run_7zip
-    try:
-        return _archivers.create_archive(
-            job_id,
-            item_path,
-            inventory,
-            manifest_path,
-            config,
-            token,
-            runtime,
-            callbacks,
-            temp_archive,
-        )
-    finally:
-        _archivers._run_7zip = original_run_7zip
+    return _archivers.create_archive(
+        job_id, item_path, inventory, manifest_path, config, token, runtime,
+        callbacks, temp_archive, run_7zip=_run_7zip,
+    )
 
 
 def verify_archive(
@@ -145,19 +133,12 @@ def verify_archive(
     callbacks: JobCallbacks,
     job_id: int | None = None,
     token: CancellationToken | None = None,
+    password: str | None = None,
 ) -> bool:
-    original_run_7zip = _archivers._run_7zip
-    _archivers._run_7zip = _run_7zip
-    try:
-        return _archivers.verify_archive(
-            archive_path,
-            archive_fmt,
-            callbacks,
-            job_id=job_id,
-            token=token,
-        )
-    finally:
-        _archivers._run_7zip = original_run_7zip
+    return _archivers.verify_archive(
+        archive_path, archive_fmt, callbacks, job_id=job_id, token=token,
+        password=password, run_7zip=_run_7zip,
+    )
 
 
 def run_session(
@@ -176,8 +157,6 @@ def run_session(
     previous_7zip = os.environ.get("FORENSICPACK_7ZIP")
     if explicit_no_hash:
         config.verify_member_hashes = False
-    if config.resume_enabled:
-        config.fail_on_collision = False
     if config.seven_zip_path:
         os.environ["FORENSICPACK_7ZIP"] = str(config.seven_zip_path)
 
@@ -185,12 +164,9 @@ def run_session(
     _core.verify_archive = verify_archive
     _core.build_forensic_inventory = build_inventory
     _core.classify_source_items = classify_source_items
-    original_run_7zip = _archivers._run_7zip
-    _archivers._run_7zip = _run_7zip
     try:
         results = _CORE_RUN_SESSION(config, callbacks, token)
     finally:
-        _archivers._run_7zip = original_run_7zip
         config.verify_member_hashes = original_member_verify
         config.fail_on_collision = original_fail_on_collision
         if config.seven_zip_path:
@@ -204,8 +180,6 @@ def run_session(
         "Archive hash skipped: no hash algorithms selected.",
     }
     for result in results:
-        if "SOURCE RETAINED" in result.verify.upper():
-            result.verify = "PASS (SOURCE RETAINED)"
         if explicit_no_hash:
             result.warnings = [warning for warning in result.warnings if warning not in no_hash_warnings]
             result.content_verify = "NOT REQUESTED"

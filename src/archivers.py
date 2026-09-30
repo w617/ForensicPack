@@ -105,7 +105,10 @@ def create_archive(
     runtime: RuntimeState,
     callbacks: JobCallbacks,
     temp_archive: Path,
+    *,
+    run_7zip: Callable | None = None,
 ) -> Path:
+    runner = run_7zip or _run_7zip
     level = COMPRESSION_LEVELS.get(config.compress_level_label, "5")
     split_arg = split_size_arg(
         config.split_enabled,
@@ -129,18 +132,10 @@ def create_archive(
             if split_arg:
                 args.append(f"-v{split_arg}")
             args += [str(temp_archive), str(item_path)]
-            if not _run_7zip(job_id, args, token, runtime, callbacks):
-                raise RuntimeError("7z archive creation failed.")
             if config.embed_manifest_in_archive and manifest_path.exists():
-                callbacks.log_cb("  Embedding manifest inside archive ...", "#8b949e")
-                if not _run_7zip(
-                    job_id,
-                    ["a", str(temp_archive), str(manifest_path)],
-                    token,
-                    runtime,
-                    callbacks,
-                ):
-                    raise RuntimeError("Failed to embed manifest into 7z archive.")
+                args.append(str(manifest_path))
+            if not runner(job_id, args, token, runtime, callbacks):
+                raise RuntimeError("7z archive creation failed.")
             callbacks.emit_progress(ProgressEvent(job_id, "archive", 1, 1, f"Archived {item_path.name}"))
             return temp_archive
 
@@ -228,7 +223,11 @@ def verify_archive(
     job_id: int | None = None,
     token: CancellationToken | None = None,
     seven_zip_path: str | Path | None = None,
+    password: str | None = None,
+    *,
+    run_7zip: Callable | None = None,
 ) -> bool:
+    runner = run_7zip or _run_7zip
     callbacks.log_cb(f"  Verifying integrity of {archive_path.name} ...", "#8b949e")
     if archive_fmt == "7z":
         if token is None or job_id is None:
@@ -237,7 +236,10 @@ def verify_archive(
         if seven_zip_path:
             os.environ["FORENSICPACK_7ZIP"] = str(seven_zip_path)
         try:
-            return _run_7zip(job_id, ["t", str(archive_path)], token, RuntimeState(), callbacks)
+            args = ["t", str(archive_path)]
+            if password:
+                args.append(f"-p{password}")
+            return runner(job_id, args, token, RuntimeState(), callbacks)
         finally:
             if seven_zip_path:
                 if previous_7zip is None:
