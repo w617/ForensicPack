@@ -148,6 +148,7 @@ def apply_ui_refresh(app_class) -> None:
         self._open_output_btn = action_button("Open Destination", self._open_output_folder, accent=True)
         self._open_metadata_btn = action_button("Open Metadata", self._open_metadata_folder)
         self._open_report_btn = action_button("Open Last Report", self._open_last_report)
+        self._history_btn = action_button("Job History", self._open_job_history)
 
         more_btn = tk.Menubutton(
             actions,

@@ -253,7 +253,10 @@ def test_7z_engine_calls_real_runner_without_recursion(evidence, monkeypatch):
         returncode = 0
         stdout = []
 
-        def wait(self):
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(archivers, "find_7zip", lambda *_args: "7z")

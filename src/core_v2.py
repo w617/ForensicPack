@@ -8,6 +8,7 @@ from typing import Callable, Literal
 
 from archivers import create_archive, verify_archive
 from audit import AuditLogger
+from history import HistoryStore
 from content_verification import verify_archive_member_hashes
 from forensic_inventory import build_forensic_inventory, write_forensic_manifest
 from hashing import hash_file
@@ -89,6 +90,7 @@ def _result_from_resume_row(row: sqlite3.Row, config: JobConfig) -> JobResult:
         manifest_path=row["manifest_path"] or "",
         external_manifest_json=row["manifest_json_path"] or "",
         content_verify="PASS",
+        run_id=Path(row["manifest_json_path"]).parent.name if row["manifest_json_path"] else "",
     )
 
 
@@ -199,6 +201,9 @@ def _process_single_item(
     callbacks.log_cb(f"  [START] {item_path.name}", "#58a6ff")
 
     metadata_dir = create_run_metadata_dir(config.output_dir, item_path.name)
+    result.run_id = metadata_dir.name
+    history = HistoryStore()
+    history.begin(result.run_id, metadata_dir, item_path, existing_verify_path, config)
     final_manifest_name = f"{item_path.name}.manifest.txt"
     temp_manifest = metadata_dir / f"tmp_{job_id}_{item_path.name}_manifest.txt"
     temp_archive = config.output_dir / f"{item_path.name}{archive_suffix(config.archive_fmt)}.partial"
@@ -448,6 +453,11 @@ def _process_single_item(
                 pass
         result.end_time = _now_iso()
         result.elapsed_seconds = (dt.datetime.now() - started_at).total_seconds()
+        try:
+            history.finish(result)
+        except (OSError, sqlite3.Error) as exc:
+            result.warnings.append(f"Could not update job history: {exc}")
+            callbacks.log_cb(f"  [WARN] Could not update job history: {exc}", "#d29922")
         token.clear_skip(job_id)
         if callbacks.item_status_cb and terminal_state:
             callbacks.item_status_cb(job_id, terminal_state)
@@ -556,6 +566,7 @@ def run_session(
         paths = report_paths(config.output_dir)
         callbacks.status_cb("Writing session report ...")
         write_reports(paths, ordered, config)
+        HistoryStore().attach_reports([result.run_id for result in ordered], paths)
         summary = summarize_job_results(ordered)
         callbacks.progress_overall_cb(1.0)
         callbacks.status_cb("Complete")

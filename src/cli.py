@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     pack.add_argument("--allow-output-collision", action="store_true")
     pack.add_argument("--no-preflight", action="store_true")
     pack.add_argument("--no-audit-log", action="store_true")
+    pack.add_argument("--verify-temp-dir", type=Path, default=None, help="Temporary folder for 7z verification readback.")
     pack.add_argument("--7zip-path", type=Path, default=None)
     pack.add_argument("--signing-key", type=Path, default=None, help="PEM private key for manifest signing.")
     pack.add_argument("--signing-certificate", type=Path, default=None)
@@ -89,6 +90,22 @@ def build_parser() -> argparse.ArgumentParser:
     transfer.add_argument("--destination", required=True, type=Path)
     transfer.add_argument("--hash", dest="hashes", action="append", default=["SHA256"])
     transfer.add_argument("--report", type=Path, default=None, help="Optional JSON transfer report path.")
+    history = sub.add_parser("history", help="Search retained job history")
+    history.add_argument("--query", default="")
+    history.add_argument("--status", default="All")
+    history.add_argument("--offset", type=int, default=0)
+    history.add_argument("--import-existing", action="store_true")
+    reverify = sub.add_parser("reverify", help="Reverify a retained run without its original source")
+    reverify.add_argument("--run", required=True)
+    reverify.add_argument("--archive-dir", type=Path)
+    reverify.add_argument("--verify-temp-dir", type=Path)
+    reverify.add_argument("--ask-password", action="store_true")
+    records = sub.add_parser("export-records", help="Export selected verification records, excluding evidence archives")
+    records.add_argument("--run", action="append", required=True)
+    records.add_argument("--output", type=Path, required=True)
+    check = sub.add_parser("verify-records", help="Verify record bundle hashes and optional relocated archive hashes")
+    check.add_argument("--input", type=Path, required=True)
+    check.add_argument("--archive-dir", type=Path)
     return parser
 
 
@@ -105,6 +122,39 @@ def run_cli(argv: list[str] | None = None) -> int:
 
         launch_gui()
         return 0
+
+    if args.command in {"history", "reverify", "export-records", "verify-records"}:
+        from history import HistoryStore
+        from models import JobCancelled
+        from verification_center import export_records, reverify_run, verify_record_bundle
+        token = CancellationToken()
+        previous = signal.signal(signal.SIGINT, lambda *_: token.request_cancel())
+        try:
+            store = HistoryStore()
+            if args.command == "history":
+                if args.import_existing:
+                    store.import_previous_runs(token)
+                rows, total = store.search(args.query, args.status, offset=args.offset)
+                result = {"total": total, "runs": rows}
+            elif args.command == "reverify":
+                import getpass
+                password = getpass.getpass("Archive password: ") if args.ask_password else None
+                result = reverify_run(args.run, archive_dir=args.archive_dir, verify_temp_dir=args.verify_temp_dir,
+                                      password=password, token=token, store=store)
+            elif args.command == "export-records":
+                result = {"output": str(export_records(args.run, args.output, token=token, store=store))}
+            else:
+                result = verify_record_bundle(args.input, archive_dir=args.archive_dir, token=token)
+            print(json.dumps(result, indent=2))
+            return 1 if result.get("status") in {"failed", "cancelled"} else 0
+        except JobCancelled:
+            print("[CANCELLED] No completed export was published.")
+            return 1
+        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"[ERROR] {exc}")
+            return 1
+        finally:
+            signal.signal(signal.SIGINT, previous)
 
     if args.command == "transfer-verify":
         try:
@@ -179,6 +229,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         fail_on_collision=not args.allow_output_collision,
         preflight_space_check=not args.no_preflight,
         audit_log=not args.no_audit_log,
+        verify_temp_dir=args.verify_temp_dir,
         seven_zip_path=args.__dict__.get("7zip_path"),
         signing_key_path=args.signing_key,
         signing_certificate_path=args.signing_certificate,

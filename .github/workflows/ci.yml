@@ -36,6 +36,14 @@ jobs:
       - name: Run tests
         working-directory: src
         run: python -m pytest -q --junitxml=test-results.xml
+      - name: Native large split-archive round trip
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.12'
+        working-directory: src
+        env:
+          FORENSICPACK_LARGE_TESTS: "1"
+        run: |
+          python -c "from archivers import find_7zip; assert find_7zip(), 'Native 7-Zip is required for this check'"
+          python -m pytest -q test_verification_center.py -k large_native
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

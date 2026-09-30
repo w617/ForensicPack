@@ -115,6 +115,7 @@ class JobConfig:
     fail_on_collision: bool = True
     preflight_space_check: bool = True
     audit_log: bool = True
+    verify_temp_dir: Path | None = None
     seven_zip_path: Path | None = None
     signing_key_path: Path | None = None
     signing_certificate_path: Path | None = None
@@ -147,6 +148,7 @@ class JobResult:
     checksum_path: str = ""
     signature_path: str = ""
     audit_log_path: str = ""
+    run_id: str = ""
     content_verify: str = "NOT RUN"
     archive_member_count: int = 0
     scan_issues: list[ScanIssue] = field(default_factory=list)
@@ -167,6 +169,7 @@ class JobResult:
         from engine import HASH_NAMES
 
         row = {
+            "Run ID": self.run_id,
             "Case Name": self.case_name,
             "Format": self.format,
             "Status": self.status,

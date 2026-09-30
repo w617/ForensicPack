@@ -68,6 +68,7 @@ def write_report_txt(path: Path, results: list[JobResult], config: JobConfig, sy
     for result in results:
         lines.extend(
             [
+                f"Run ID     : {result.run_id}",
                 f"Case       : {result.case_name}",
                 f"Status     : {result.status}",
                 f"Files      : {result.file_count}",
@@ -107,6 +108,7 @@ def write_report_csv(path: Path, results: list[JobResult], config: JobConfig) ->
 
     _normalize_no_hash_results(results, config)
     fields = [
+        "Run ID",
         "Case Name",
         "Format",
         "Status",

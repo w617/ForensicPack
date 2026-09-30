@@ -13,23 +13,24 @@
 
 ForensicPack turns folders and files into documented, verifiable evidence packages through a streamlined Windows interface and repeatable CLI workflow.
 
-## Significant changes — v2.2.2
+## Significant changes — v2.3.0
 
-Version 2.2.2 adds five evidence-integrity fixes. Upgrade the Windows application
-to receive them; the previous v2.2.1 executable does not include these changes.
-Download the Windows package, checksum, and SBOM from the
-[v2.2.2 release](https://github.com/w617/ForensicPack/releases/tag/v2.2.2).
+Version 2.3.0 adds the Job History & Verification window, portable verification
+records, and more reliable large-archive verification. Download the complete
+Windows package, checksum, and SBOM from the
+[v2.3.0 release](https://github.com/w617/ForensicPack/releases/tag/v2.3.0).
 
 | Change | Effect on your workflow |
 |---|---|
-| Source-deletion safeguards | Incomplete scans, disabled verification, unresolved packaging warnings, or changed source files retain the source and produce a warning. |
-| 7-Zip execution repair | Removes the recursive runner failure, supplies passwords to structural verification, and embeds manifests during initial creation of encrypted or split archives. |
-| Validated resume | Rechecks the saved manifest, every archive volume, and current source files before skipping completed work. |
-| Retained run history | Each packaging attempt receives its own audit and metadata folder; reruns preserve earlier records. |
-| Complete member verification | Invalid 7z signatures and zero or partial member checks cannot be reported as a full verification pass. |
+| Exact 7z inventory | Packages only inventoried files, preserving exclusions and ignoring files added after the scan. |
+| Verification temporary folder | Choose a scratch drive, check extraction capacity, and cancel extraction or hashing. |
+| Searchable job history | Find runs by case, evidence ID, item, location, or run ID; open logs and reports; reverify moved archives. |
+| Export Records | Export selected runs' metadata and reports in a checked ZIP, without copying evidence archives. |
+| Failure regression coverage | Exercises cancellation, disk-full/disconnected-drive errors, long paths, and actual split archives. |
 
-See [CHANGELOG.md](CHANGELOG.md) for implementation details, validation results,
-and earlier release changes.
+All five v2.2.2 integrity repairs remain included: guarded source deletion,
+repaired 7-Zip execution, validated resume, retained per-run records, and complete
+member verification. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Core capabilities
 
@@ -43,6 +44,8 @@ and earlier release changes.
 | Structural verification | `7z t`, ZIP CRC validation, or full TAR member readback |
 | External metadata | Text/JSON manifests, SHA-256 sidecars, optional signatures, and audit logs |
 | Reporting | TXT, CSV, optional JSON, and optional PDF |
+| Job history | Search retained runs, open logs/reports, and record independent reverification outcomes |
+| Portable records | Export and check metadata/report bundles without including archive evidence |
 | Resume support | SQLite-backed recovery with manifest, archive-volume, and source revalidation |
 | Verified transfer | Copies a package and confirms destination hashes |
 | Release assurance | Matrix tests, Bandit, dependency audit, CodeQL, Windows build smoke tests, checksums, and CycloneDX SBOM |
@@ -60,7 +63,8 @@ Generated application metadata is stored separately.
 ### Windows
 
 The application-data root is `%LOCALAPPDATA%\ForensicPack`. The resume database
-is `forensicpack_state.db` under that root. Each destination has a metadata
+is `forensicpack_state.db` under that root. The separate searchable history index
+is `history.db`. Each destination has a metadata
 workspace at `Cases\<destination-name>-<identifier>`.
 
 | Location within the workspace | Contents |
@@ -102,6 +106,7 @@ The footer keeps common actions visible:
 - Open Destination
 - Open Metadata
 - Open Last Report
+- Job History
 - More Actions
 
 ## Same-folder packaging
@@ -130,6 +135,51 @@ A structural test establishes that an archive can be read. A complete content
 verification also requires archived-member SHA-256 values to match every
 inventoried source file. Review **Content Verify**, warnings, and scan issues
 alongside the overall result, particularly when optional checks are disabled.
+
+### Large 7z archives and temporary storage
+
+7z member verification extracts into a temporary directory. Select **Verification
+temporary folder** under Advanced Settings, or pass `--verify-temp-dir` when
+packaging or reverifying. Leave it blank for the system temporary folder. The
+folder must already exist and be outside the source and destination folders.
+ZIP and TAR member checks stream their contents without this extraction step.
+
+Before packaging, ForensicPack checks capacity for the largest queued 7z job.
+Each extraction checks again and reserves space against other active jobs in the
+same application process: inventoried bytes plus the larger of 10% or 64 MiB.
+Other applications and separate ForensicPack processes can still consume disk
+space. Temporary extraction files are removed on completion, failure, or normal
+cancellation. Abrupt power loss or forced process termination can leave temporary
+files. Closing the GUI during active work requests cancellation and waits for cleanup.
+
+7z creation uses an explicit UTF-8 file list with recursion and wildcard matching
+disabled. Filenames containing newline, carriage return, or NUL cannot be
+represented safely and fail explicitly. Source files must remain stable while
+packaging; the file list is not a filesystem snapshot.
+
+### Job History & Verification
+
+Open **Job History** to search or filter packaging attempts. Run IDs link archive
+locations, original outcomes, warnings, logs, and reports. **Import Prior Runs**
+indexes retained v2.2.2 `Runs` folders without modifying them; imports are marked
+as not reverified. Interrupted processes can leave a `running/incomplete` record.
+
+Select a run and choose **Reverify**, then select the archive's current folder.
+ForensicPack checks the retained manifest and audit, all volume hashes, archive
+structure, and member SHA-256 values. Original source files are not required or
+re-examined. Each check receives a separate timestamped report; it never rewrites
+the original packaging outcome or audit. Encrypted 7z archives require their
+password again. Missing or overwritten archive bytes cannot be restored from history.
+
+Select one or more runs and choose **Export Records** to create a ZIP containing
+retained manifests, audit logs, checksums, available signature/certificate files,
+session reports, and reverification reports. Evidence archives are excluded.
+Session reports can contain other items from the same session; review them before
+sharing. The bundle includes a SHA-256 inventory and is checked before publication.
+Existing export files are never overwritten. A recipient can verify the bundle
+without the sender's history database and optionally compare supplied archive
+volumes. These hashes establish consistency, not independent authenticity;
+exporting signature files does not itself validate their signatures.
 
 ### Source deletion
 
@@ -202,6 +252,21 @@ python forensicpack.py transfer-verify `
   --report .\transfer-report.json
 ```
 
+### History, reverification, and portable records
+
+```powershell
+python forensicpack.py history --query "2026-001"
+python forensicpack.py history --import-existing
+python forensicpack.py reverify --run RUN_ID --archive-dir E:\EvidenceDelivery --verify-temp-dir D:\Scratch
+# Add --ask-password for an encrypted 7z archive; the prompt does not echo it.
+python forensicpack.py export-records --run RUN_ID --output .\verification-records.zip
+# Repeat --run to include multiple runs.
+python forensicpack.py verify-records --input .\verification-records.zip --archive-dir E:\EvidenceDelivery
+```
+
+`verify-records` checks bundle files and optional archive-volume hashes. Use
+`reverify` with an indexed run for archive structural and member-content checks.
+
 ## Advanced controls
 
 | Control | Purpose |
@@ -213,6 +278,7 @@ python forensicpack.py transfer-verify `
 | Skip archive hash | Retain file-level integrity work while skipping the final container hash |
 | JSON report | Produce a machine-readable session report |
 | Embed manifest | Add the text manifest inside the archive |
+| Verification temporary folder | Choose a drive with capacity for extracted 7z members |
 | Resume DB override | Use a custom SQLite path instead of the application-data default |
 
 ## Requirements
@@ -234,7 +300,21 @@ The integrity regression suite covers source retention, changed and missing
 resume inputs, split volumes, audit-history preservation, invalid signatures,
 and nonrecursive 7-Zip execution. Native round-trip tests require an installed
 7-Zip executable and cover plain, encrypted, and split archives; they skip if
-7-Zip is unavailable.
+7-Zip is unavailable. Additional regression tests cover exact file selection,
+quiet subprocess cancellation, extraction cleanup, low scratch capacity,
+concurrent scratch reservations, simulated ENOSPC/ENODEV/EIO write failures,
+long paths, history searches, moved archives, and changed verification records.
+
+Enable the 128 MiB native split-archive round trip with:
+
+```powershell
+$env:FORENSICPACK_LARGE_TESTS = "1"
+python -m pytest -q test_verification_center.py -k large_native
+```
+
+This opt-in test needs 7-Zip and sufficient source, output, and temporary space.
+Simulated I/O failures exercise application error handling; they do not replace
+physical-drive or power-loss validation.
 
 CI also runs Ruff, mypy analysis, Bandit, pip-audit, coverage, CodeQL, a Windows PyInstaller build, and an executable smoke launch.
 
