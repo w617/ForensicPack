@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 30-Sep-2026
+## 2.2.2 — 30-Sep-2026
 
 ### Fixed
 
@@ -35,6 +35,13 @@
    reported as a complete verification pass. Synthetic archive fixtures now
    substitute a verifier explicitly within their orchestration tests.
 
+### Release maintenance
+
+- Updated `cryptography` from 48.0.1 to 50.0.1 to resolve dependency-audit findings.
+- Bundled the release-version file in Windows builds and verify its contents
+  before release packaging. Build scripts now stop on failed dependency installs,
+  tests, or PyInstaller execution.
+
 ### Compatibility and operational notes
 
 - Delivery folders continue to contain archives only. Run records remain under
@@ -63,8 +70,8 @@
 - Full local Python 3.12 suite: **102 passed, 17 skipped, 6 expected failures**.
   The skipped tests require a graphical Tk environment. Existing expected failures
   cover prior metadata-layout and symlink-policy expectations. Ruff checks pass.
-- Windows executable validation is handled by the existing GitHub Actions build
-  and smoke-launch jobs; no new executable is published by this change itself.
+- Windows executable validation uses the GitHub Actions build and smoke-launch jobs.
+  Release assets include the Windows package, SHA-256 checksum, and CycloneDX SBOM.
 
 ## 2.2.1 — 29-Jul-2026
 

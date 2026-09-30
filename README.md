@@ -13,10 +13,12 @@
 
 ForensicPack turns folders and files into documented, verifiable evidence packages through a streamlined Windows interface and repeatable CLI workflow.
 
-## Significant changes — unreleased
+## Significant changes — v2.2.2
 
-This branch adds five evidence-integrity fixes. They are not included in the
-previously published v2.2.1 Windows executable; a new build is required.
+Version 2.2.2 adds five evidence-integrity fixes. Upgrade the Windows application
+to receive them; the previous v2.2.1 executable does not include these changes.
+Download the Windows package, checksum, and SBOM from the
+[v2.2.2 release](https://github.com/w617/ForensicPack/releases/tag/v2.2.2).
 
 | Change | Effect on your workflow |
 |---|---|

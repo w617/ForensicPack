@@ -5,7 +5,7 @@ a = Analysis(
     ['forensicpack.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    datas=[('assets', 'assets'), ('release_version.txt', '.') ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

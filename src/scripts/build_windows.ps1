@@ -17,6 +17,7 @@ if (Test-Path $venvPath) {
 
 Write-Host "[INFO] Creating build virtual environment..."
 & $Python -m venv $venvPath
+if ($LASTEXITCODE -ne 0) { throw "Build environment creation failed" }
 
 $venvPython = Join-Path $venvPath "Scripts/python.exe"
 if (-not (Test-Path $venvPython)) {
@@ -25,11 +26,14 @@ if (-not (Test-Path $venvPython)) {
 
 Write-Host "[INFO] Installing build dependencies..."
 & $venvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 & $venvPython -m pip install -r requirements-dev.txt
+if ($LASTEXITCODE -ne 0) { throw "Build dependency installation failed" }
 
 if (-not $SkipTests) {
     Write-Host "[INFO] Running tests..."
     & $venvPython -m pytest
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to build a release" }
 }
 
 if (Test-Path "build") {
@@ -48,13 +52,22 @@ Write-Host "[INFO] Building ForensicPack.exe with PyInstaller..."
     --name "ForensicPack" `
     --icon "assets/forensicpack_icon.ico" `
     --add-data "assets;assets" `
+    --add-data "release_version.txt;." `
     --collect-all reportlab `
     --collect-all cryptography `
     forensicpack.py
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 $exePath = Join-Path $repoRoot "dist/ForensicPack/ForensicPack.exe"
 if (-not (Test-Path $exePath)) {
     throw "Build completed but executable was not found at $exePath"
+}
+
+$bundledVersionPath = Join-Path $repoRoot "dist/ForensicPack/_internal/release_version.txt"
+if (-not (Test-Path $bundledVersionPath)) { throw "Packaged release version is missing" }
+$expectedVersion = (Get-Content "release_version.txt" -Raw).Trim()
+if ((Get-Content $bundledVersionPath -Raw).Trim() -ne $expectedVersion) {
+    throw "Packaged release version does not match source version"
 }
 
 if ($SigningScript) {
